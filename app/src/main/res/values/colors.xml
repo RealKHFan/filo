@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="filo_teal">#0F6E56</color>
+    <color name="filo_teal_light">#E1F5EE</color>
+    <color name="window_light">#F8FAF9</color>
+    <color name="window_dark">#101413</color>
+</resources>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <external-path name="storage" path="." />
+    <cache-path name="hidden_open" path="vault_open/" />
+    <!-- SD cards and USB drives live outside the primary storage path -->
+    <root-path name="volumes" path="storage/" />
+</paths>

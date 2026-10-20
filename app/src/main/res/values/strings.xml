@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Filo</string>
+    <string name="shortcut_storage">Internal storage</string>
+    <string name="shortcut_downloads">Downloads</string>
+</resources>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:icon="@drawable/ic_shortcut_storage"
+        android:shortcutId="storage"
+        android:shortcutShortLabel="@string/shortcut_storage">
+        <intent
+            android:action="app.filo.action.STORAGE"
+            android:targetClass="app.filo.MainActivity"
+            android:targetPackage="app.filo" />
+    </shortcut>
+    <shortcut
+        android:icon="@drawable/ic_shortcut_downloads"
+        android:shortcutId="downloads"
+        android:shortcutShortLabel="@string/shortcut_downloads">
+        <intent
+            android:action="app.filo.action.DOWNLOADS"
+            android:targetClass="app.filo.MainActivity"
+            android:targetPackage="app.filo" />
+    </shortcut>
+</shortcuts>
