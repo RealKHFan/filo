@@ -35,8 +35,9 @@ class FiloApplication : Application(), SingletonImageLoader.Factory {
             ProcessLifecycleOwner.get().lifecycle.addObserver(
                 LifecycleEventObserver { _, event ->
                     when (event) {
-                        Lifecycle.Event.ON_STOP -> autoLock.onBackground()
-                        Lifecycle.Event.ON_START -> autoLock.onForeground()
+                        // Pause, not stop: the recent-apps view keeps Filo "visible" but no longer in front.
+                        Lifecycle.Event.ON_PAUSE -> autoLock.onBackground()
+                        Lifecycle.Event.ON_RESUME -> autoLock.onForeground()
                         else -> Unit
                     }
                 },

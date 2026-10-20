@@ -2,6 +2,7 @@ package app.filo.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -151,7 +152,6 @@ fun FileCollectionScreen(
     BackHandler(enabled = active && selection.isNotEmpty()) { selection = emptySet() }
 
     fun toggle(entry: FileEntry) {
-        if (pickForVault && entry.isDirectory) return
         selection = if (entry.path in selection) selection - entry.path else selection + entry.path
     }
 
@@ -168,12 +168,9 @@ fun FileCollectionScreen(
     }
 
     fun hide(paths: Collection<String>) {
-        if (graph.vault.unlocked.value) {
-            actions.moveToVault(paths)
-        } else {
-            actions.pendingVault.value = paths.toList()
-            nav.navigate(Routes.VAULT)
-        }
+        // The hidden folder opens (after unlocking) with a "Hide here" bar, so you choose the folder inside.
+        actions.pendingVault.value = paths.toList()
+        if (!nav.popBackStack(Routes.VAULT, inclusive = false)) nav.navigate(Routes.VAULT)
     }
 
     fun clip(mode: ClipMode, paths: Collection<String>) {
@@ -216,7 +213,7 @@ fun FileCollectionScreen(
                 var sortMenu by remember { mutableStateOf(false) }
                 var moreMenu by remember { mutableStateOf(false) }
                 TopAppBar(
-                    title = { Text(if (pickForVault) "Choose files to hide" else title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    title = { Text(if (pickForVault) "Choose what to hide" else title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     navigationIcon = {
                         if (onBack != null) {
                             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
@@ -268,7 +265,7 @@ fun FileCollectionScreen(
             val c = clip
             when {
                 pickForVault -> ActionBar(
-                    text = if (selection.isEmpty()) "Tap files to select them" else "${itemCount(selection.size).replace("item", "file")} selected",
+                    text = if (selection.isEmpty()) "Tap files to select them. Long-press to select a folder." else "${itemCount(selection.size)} selected",
                     confirm = "Hide",
                     enabled = selection.isNotEmpty(),
                     onCancel = { nav.popBackStack() },
@@ -296,9 +293,18 @@ fun FileCollectionScreen(
         Column(Modifier.fillMaxSize().padding(padding)) {
             topContent?.invoke()
             val list = sorted
+            // Selected files can be dragged onto folders, the path bar, or into this folder.
+            val paneDrop = if (currentDir == null || pickForVault) {
+                null
+            } else {
+                PaneDrop(STORAGE_SPACE, currentDir.absolutePath, title) { target, paths ->
+                    actions.moveInto(paths, target?.file ?: currentDir)
+                    selection = emptySet()
+                }
+            }
             when {
                 list == null -> Loading()
-                list.isEmpty() -> EmptyState(Icons.Outlined.FolderOpen, emptyTitle, emptyBody)
+                list.isEmpty() -> Box(Modifier.fillMaxSize().dropHere(paneDrop)) { EmptyState(Icons.Outlined.FolderOpen, emptyTitle, emptyBody) }
                 else -> key(selectionKey) {
                     FileListPane(
                         entries = list,
@@ -309,9 +315,9 @@ fun FileCollectionScreen(
                         onSelectionChange = { selection = it },
                         onMore = if (pickForVault) null else { entry -> sheetFor = entry },
                         onLevelChange = { setView(view.copy(level = it)) },
-                        selectable = { !(pickForVault && it.isDirectory) },
                         tapSelects = pickForVault,
                         highlight = highlight,
+                        drop = paneDrop,
                     )
                 }
             }
@@ -416,7 +422,7 @@ private fun SelectionBar(
                     @Suppress("DEPRECATION") item("Move to…", Icons.Outlined.DriveFileMove, onMove),
                     item("Compress to zip", Icons.Outlined.FolderZip, onCompress),
                     item(if (allFavorite) "Remove from favorites" else "Add to favorites", Icons.Outlined.StarBorder, onFavorite),
-                    if (allFiles) item("Move to hidden folder", Icons.Outlined.Lock, onHide) else null,
+                    item("Move to hidden folder", Icons.Outlined.Lock, onHide),
                 ).forEach { (text, icon, action) ->
                     DropdownMenuItem(
                         text = { Text(text) },
@@ -458,7 +464,7 @@ fun SortMenu(expanded: Boolean, sort: SortOrder, onDismiss: () -> Unit, onChange
 }
 
 @Composable
-private fun ActionBar(text: String, confirm: String, enabled: Boolean, onCancel: () -> Unit, onConfirm: () -> Unit) {
+fun ActionBar(text: String, confirm: String, enabled: Boolean, onCancel: () -> Unit, onConfirm: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, tonalElevation = 3.dp) {
         Row(
             Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp),
@@ -526,7 +532,7 @@ private fun FileActionSheet(
             action("Rename", Icons.Outlined.Edit, onRename)
             action(if (favorite) "Remove from favorites" else "Add to favorites", if (favorite) Icons.Outlined.Star else Icons.Outlined.StarBorder, onFavorite)
             if (entry.extension == "zip") action("Extract here", Icons.Outlined.Unarchive, onExtract) else action("Compress to zip", Icons.Outlined.FolderZip, onCompress)
-            if (!entry.isDirectory) action("Move to hidden folder", Icons.Outlined.Lock, onHide)
+            action("Move to hidden folder", Icons.Outlined.Lock, onHide)
             action("File info", Icons.Outlined.Info, onInfo)
             action("Move to trash", Icons.Outlined.Delete, onTrash)
         }

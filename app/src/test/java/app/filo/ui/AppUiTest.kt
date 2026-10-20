@@ -14,6 +14,9 @@ import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.isDialog
+import androidx.compose.ui.geometry.lerp
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.pinch
@@ -367,11 +370,13 @@ class AppUiTest {
         described("More options for IMG_0001.png").performClick()
         clickable("Move to hidden folder").performClick()
         waitFor("Hidden folder is locked")
-        waitFor("Unlock to hide 1 file")
+        waitFor("Unlock to hide 1 item")
         typePin("000000")
         waitFor("Wrong PIN", substring = true)
         shot("13_hidden_unlock_wrong_pin")
         typePin("123456")
+        waitFor("1 item to hide")
+        clickable("Hide here").performClick()
         val photo = File(root, "DCIM/Camera/IMG_0001.png")
         compose.waitUntil(10_000) { !photo.exists() && graph.vault.items.value.size == 1 }
         waitFor("IMG_0001.png")
@@ -543,10 +548,36 @@ class AppUiTest {
         compose.waitForIdle()
         compose.waitUntil(15_000) { compose.onAllNodes(hasText("Add files"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         assertTrue("still blocked back in the folder", secure())
+
         back() // leave the hidden folder
         compose.waitUntil(5_000) { !graph.vault.unlocked.value }
         compose.waitForIdle()
         assertFalse("normal screens can be captured again", secure())
+    }
+
+    @Test fun hiddenFolderCoversItselfWhenFiloIsNotInFront() {
+        // "Show all windows" shows Filo live; it's paused, not in front. Simulated with our own lifecycle.
+        val owner = object : androidx.lifecycle.LifecycleOwner {
+            val registry = androidx.lifecycle.LifecycleRegistry.createUnsafe(this)
+            override val lifecycle: androidx.lifecycle.Lifecycle get() = registry
+        }
+        owner.registry.currentState = androidx.lifecycle.Lifecycle.State.RESUMED
+        compose.setContent {
+            androidx.compose.foundation.layout.Box {
+                androidx.compose.material3.Text("Secret picture")
+                PrivacyCurtain(owner.lifecycle)
+            }
+        }
+        fun curtain() = compose.onAllNodes(hasTestTag("privacy_curtain"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        compose.waitForIdle()
+        assertFalse("nothing covered while in front", curtain())
+        owner.registry.currentState = androidx.lifecycle.Lifecycle.State.STARTED // paused
+        compose.waitForIdle()
+        assertTrue("covered as soon as Filo isn't in front", curtain())
+        shot("31_privacy_cover")
+        owner.registry.currentState = androidx.lifecycle.Lifecycle.State.RESUMED
+        compose.waitForIdle()
+        assertFalse("uncovered when back in front", curtain())
     }
 
     @Test fun aboutLinksToRepoAndShowsLicense() {
@@ -572,7 +603,7 @@ class AppUiTest {
         listOf("Favorites", "Hidden folder").forEach { compose.onAllNodes(hasText(it) and hasClickAction()).assertCountEquals(2) }
         shot("17_menu")
         clickable("About").performClick()
-        waitFor("Version 1.3.0")
+        waitFor("Version 1.5.0")
         shot("18_about")
     }
 
@@ -613,5 +644,177 @@ class AppUiTest {
         waitFor("Welcome to Filo")
         clickable("Allow access").assertExists()
         shot("21_permission")
+    }
+
+    @Test fun hideAWholeFolderBrowseInsideAndMoveItBack() {
+        graph.vault.setup("123456")
+        show()
+        openTab("Storage")
+        waitFor("Pictures")
+        compose.onNode(hasText("Pictures")).performTouchInput { longClick() }
+        waitFor("1 selected")
+        described("More actions").performClick()
+        clickable("Move to hidden folder").performClick()
+        waitFor("Hidden folder is locked")
+        typePin("123456")
+        clickable("Hide here").performClick()
+        val pictures = File(root, "Pictures")
+        compose.waitUntil(10_000) { !pictures.exists() && graph.vault.items.value.size == 2 }
+        assertTrue(graph.vault.folders.value.containsAll(setOf("Pictures", "Pictures/Screenshots", "Pictures/.thumbnails")))
+        waitFor("Pictures")
+        waitFor("1 item") // .thumbnails stays out of sight like everywhere else in Filo
+        shot("32_hidden_folders")
+
+        clickable("Pictures").performClick()
+        waitFor("Screenshots")
+        clickable("Screenshots").performClick()
+        waitFor("Screenshot_20261019.png")
+        clickable("Hidden folder").assertExists() // path bar back to the top
+        shot("33_hidden_subfolder")
+
+        back()
+        compose.waitUntil(5_000) { graph.vault.openFolder.value == "Pictures" }
+        back()
+        compose.waitUntil(5_000) { graph.vault.openFolder.value == "" }
+        compose.waitForIdle()
+        assertTrue("going up inside doesn't lock", graph.vault.unlocked.value)
+
+        compose.onNode(hasText("Pictures")).performTouchInput { longClick() }
+        waitFor("1 selected")
+        described("Move out of hidden folder").performClick()
+        compose.waitUntil(10_000) { graph.vault.items.value.isEmpty() && File(root, "Pictures/Screenshots/Screenshot_20261019.png").exists() }
+        assertTrue("hidden files inside come back too", File(root, "Pictures/.thumbnails/thumb1.jpg").exists())
+    }
+
+    // Small screen: see actionSheetRenameNewFolderCopyPaste.
+    @Config(qualifiers = "w320dp-h470dp-mdpi")
+    @Test fun hiddenFolderNewFolderMoveRenameAndOwnViews() {
+        graph.vault.setup("123456")
+        graph.vault.add(File(root, "Documents/Notes.txt"))
+        graph.vault.add(File(root, "Download/Boarding pass.pdf"))
+        show()
+        graph.vault.unlockWithPin("123456")
+        described("Open menu").performClick()
+        clickable("Hidden folder").performClick()
+        waitFor("Notes.txt")
+
+        described("More options").performClick()
+        clickable("New folder").performClick()
+        compose.onNode(hasSetTextAction()).performTextInput("Trips")
+        clickable("Create").performClick()
+        compose.waitUntil(10_000) { "Trips" in graph.vault.folders.value }
+        waitFor("Trips")
+
+        described("Show as list").performClick() // only for the top of the hidden folder
+        described("More options for Boarding pass.pdf").performClick()
+        clickable("Move to folder…").performClick()
+        compose.onNode(hasText("Trips") and hasClickAction() and hasAnyAncestor(isDialog())).performClick()
+        shot("34_hidden_move_dialog")
+        clickable("Move here").performClick()
+        compose.waitUntil(10_000) { graph.vault.items.value.single { it.name == "Boarding pass.pdf" }.folder == "Trips" }
+
+        described("More options for Trips").performClick()
+        clickable("Rename").performClick()
+        compose.onNode(hasSetTextAction()).performTextClearance()
+        compose.onNode(hasSetTextAction()).performTextInput("Travel")
+        clickable("Rename").performClick()
+        compose.waitUntil(10_000) { graph.vault.folders.value == setOf("Travel") }
+
+        clickable("Travel").performClick()
+        waitFor("Boarding pass.pdf")
+        described("Show as list").assertExists() // this folder kept its own (grid) view
+        back()
+        waitFor("Notes.txt")
+        described("Show as grid").assertExists()
+        shot("35_hidden_list")
+        assertTrue("no folder names in the view settings", graph.views.all.value.keys.none { it.contains("Travel") || it.contains("Trips") })
+    }
+
+    private fun center(text: String) = compose.onNode(hasText(text) and hasClickAction()).fetchSemanticsNode().boundsInRoot.center
+
+    @Test fun hiddenFolderAsksWhereToHide() {
+        graph.vault.setup("123456")
+        graph.vault.createFolder("", "Trips")
+        show()
+        openTab("Storage")
+        clickable("Documents").performClick()
+        waitFor("Notes.txt")
+        described("More options for Notes.txt").performClick()
+        clickable("Move to hidden folder").performClick()
+        waitFor("Hidden folder is locked")
+        typePin("123456")
+        waitFor("1 item to hide")
+        assertTrue("nothing hidden before choosing", graph.vault.items.value.isEmpty())
+        clickable("Trips").performClick()
+        waitFor("Tap Hide here to put them in this folder.")
+        shot("36_hide_here")
+        clickable("Hide here").performClick()
+        compose.waitUntil(10_000) { graph.vault.items.value.singleOrNull()?.folder == "Trips" }
+        assertFalse(File(root, "Documents/Notes.txt").exists())
+    }
+
+    @Test fun dragSelectedFilesOverPathBarHoldThenDropOnFolder() {
+        show()
+        openTab("Storage")
+        clickable("Download").performClick()
+        waitFor("Invoice October.pdf")
+        compose.onNode(hasText("Invoice October.pdf")).performTouchInput { longClick() }
+        waitFor("1 selected")
+        clickable("Boarding pass.pdf").performClick()
+        waitFor("2 selected")
+
+        // Long-press a selected file and carry both up to "Internal storage" in the path bar...
+        val start = center("Invoice October.pdf")
+        val crumb = center("Internal storage")
+        compose.onRoot().performTouchInput {
+            down(start)
+            advanceEventTime(viewConfiguration.longPressTimeoutMillis + 200)
+            for (i in 1..12) moveTo(lerp(start, crumb, i / 12f))
+        }
+        waitFor("Move to Internal storage")
+        // ...hold there: it opens, while the files are still held
+        compose.mainClock.advanceTimeBy(HOVER_OPEN_MILLIS + 500)
+        waitFor("DCIM")
+        val docs = center("Documents")
+        compose.onRoot().performTouchInput { for (i in 1..12) moveTo(lerp(crumb, docs, i / 12f)) }
+        waitFor("Move to Documents")
+        shot("37_drag_to_folder")
+        compose.onRoot().performTouchInput { up() }
+
+        compose.waitUntil(10_000) { File(root, "Documents/Invoice October.pdf").exists() && File(root, "Documents/Boarding pass.pdf").exists() }
+        assertFalse(File(root, "Download/Invoice October.pdf").exists())
+        waitFor("Moved 2 items to Documents")
+        clickable("Undo").performClick()
+        compose.waitUntil(10_000) { File(root, "Download/Invoice October.pdf").exists() && File(root, "Download/Boarding pass.pdf").exists() }
+    }
+
+    @Test fun dragHiddenFileOverFolderOpensItThenDropInside() {
+        graph.vault.setup("123456")
+        graph.vault.createFolder("", "Trips")
+        graph.vault.add(File(root, "DCIM/Camera/IMG_0002.png"))
+        show()
+        graph.vault.unlockWithPin("123456")
+        clickable("Hidden folder").performClick()
+        waitFor("IMG_0002.png")
+        compose.onNode(hasText("IMG_0002.png")).performTouchInput { longClick() }
+        waitFor("1 selected")
+
+        val picture = center("IMG_0002.png")
+        val trips = center("Trips")
+        compose.onRoot().performTouchInput {
+            down(picture)
+            advanceEventTime(viewConfiguration.longPressTimeoutMillis + 200)
+            for (i in 1..12) moveTo(lerp(picture, trips, i / 12f))
+        }
+        waitFor("Move to Trips")
+        compose.mainClock.advanceTimeBy(HOVER_OPEN_MILLIS + 500)
+        compose.waitUntil(5_000) { graph.vault.openFolder.value == "Trips" }
+        waitFor("This folder is empty")
+        compose.onRoot().performTouchInput { moveBy(Offset(0f, 120f)) }
+        shot("38_drag_hidden_into_folder")
+        compose.onRoot().performTouchInput { up() }
+        compose.waitUntil(10_000) { graph.vault.items.value.single().folder == "Trips" }
+        waitFor("IMG_0002.png")
+        assertTrue(graph.vault.unlocked.value)
     }
 }

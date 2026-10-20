@@ -22,8 +22,8 @@ android {
         applicationId = "app.filo"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.3.0"
+        versionCode = 7
+        versionName = "1.5.0"
     }
 
     signingConfigs {

@@ -36,6 +36,7 @@ The ☰ menu holds Favorites, Hidden folder, Settings and About, and has room fo
 - Two list sizes and four grid sizes: pinch out for bigger, pinch in for smaller
 - View size and sort order are remembered **per folder** (photo folders start as a grid)
 - Long-press and drag across files to select many at once; copy, move (with a Paste bar), rename, share, open with, file info
+- Drag and drop: long-press a selected file and drag the selection onto a folder or a part of the path bar to move it there. Hold still over one for 2 seconds and it opens, so you can keep going deeper or back up, then let go. Undo right after.
 - New folder, zip and unzip (protected against malicious archives)
 - Favorites, search across all storage
 - Picture viewer: swipe left and right through a folder, pinch or double-tap to zoom
@@ -46,7 +47,12 @@ The ☰ menu holds Favorites, Hidden folder, Settings and About, and has room fo
 
 **Hidden folder**
 - 6-digit PIN, plus optional fingerprint unlock
-- Files are encrypted with AES-256-GCM and stored in Filo's private app storage, where no other app, gallery or file manager can see them. Even file names are encrypted.
+- Hide single files or whole folders with everything inside (subfolders too). The original is removed only after every file is safely encrypted.
+- Choose where things go: after unlocking, open the folder you want and tap **Hide here**
+- Make your own folders inside it: create, rename, delete, and move hidden files and folders between them (also by drag and drop)
+- Moving a folder back out puts it where it came from, or in Download if that place is gone
+- Every folder inside keeps its own list or grid, size (pinch) and sort order
+- Files are encrypted with AES-256-GCM and stored in Filo's private app storage, where no other app, gallery or file manager can see them. File and folder names are encrypted too.
 - The folder key is sealed with your PIN *and* a hardware key from the phone's security chip (StrongBox on Pixel), so a copied vault can't be brute-forced elsewhere.
 - 5 wrong PINs, then waits of 30 s, 1 min, 2 min… up to 1 hour
 - Locks as soon as you go back out of it, and after 5 seconds in another app or with the screen off (adjustable in Settings: immediately, 5, 15, 30 seconds or 1 minute)
@@ -56,7 +62,7 @@ The ☰ menu holds Favorites, Hidden folder, Settings and About, and has room fo
 
 ## Install
 
-1. Download `Filo-1.3.0.apk` from the [Releases](../../releases) page on your phone.
+1. Download `Filo-1.5.0.apk` from the [Releases](../../releases) page on your phone.
 2. Open it. If asked, allow your browser or file app to install unknown apps.
 3. Open Filo and tap **Allow access**, then turn on **Allow access to manage all files**. (A full file manager needs this; Filo has no internet access.)
 
@@ -67,7 +73,7 @@ To tap `.apk` files inside Filo and install them, Android will ask once to let F
 Requirements: JDK 17+ and the Android SDK (platform 36).
 
 ```bash
-./gradlew testDebugUnitTest   # 66 tests: file operations, trash, zip, Review, search, encryption, PIN lockout, auto-lock, UI
+./gradlew testDebugUnitTest   # 81 tests: file operations, trash, zip, Review, search, encryption, hidden folders, PIN lockout, auto-lock, UI
 ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
 ```
 

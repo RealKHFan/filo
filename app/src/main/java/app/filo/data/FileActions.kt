@@ -3,6 +3,7 @@ package app.filo.data
 import android.content.Context
 import app.filo.Graph
 import app.filo.vault.VaultItem
+import app.filo.vault.VaultManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,7 +48,7 @@ class FileActions(private val context: Context, private val graph: Graph) {
     private val _clip = MutableStateFlow<Clip?>(null)
     val clip: StateFlow<Clip?> = _clip.asStateFlow()
 
-    /** Files waiting to be hidden until the hidden folder is unlocked. */
+    /** Files and folders waiting to be hidden until the hidden folder is unlocked. */
     val pendingVault = MutableStateFlow<List<String>>(emptyList())
 
     fun notify(text: String) {
@@ -65,6 +66,7 @@ class FileActions(private val context: Context, private val graph: Graph) {
     private fun run(
         title: String,
         totalBytes: Long = 0,
+        measure: (() -> Long)? = null,
         block: suspend (onBytes: (Long) -> Unit, isCancelled: () -> Boolean) -> UserMessage?,
     ) {
         if (job?.isActive == true) {
@@ -72,19 +74,20 @@ class FileActions(private val context: Context, private val graph: Graph) {
             return
         }
         job = scope.launch {
-            _operation.value = Operation(title, if (totalBytes > 0) 0f else null)
+            _operation.value = Operation(title, if (totalBytes > 0 || measure != null) 0f else null)
             try {
                 val message = withContext(Dispatchers.IO) {
                     val ctx = currentCoroutineContext()
+                    val total = measure?.invoke() ?: totalBytes
                     var done = 0L
                     var lastUpdate = 0L
                     block(
                         { n ->
                             done += n
                             val now = System.nanoTime()
-                            if (totalBytes > 0 && now - lastUpdate > 80_000_000L) {
+                            if (total > 0 && now - lastUpdate > 80_000_000L) {
                                 lastUpdate = now
-                                _operation.value = Operation(title, (done.toFloat() / totalBytes).coerceIn(0f, 1f))
+                                _operation.value = Operation(title, (done.toFloat() / total).coerceIn(0f, 1f))
                             }
                         },
                         { !ctx.isActive },
@@ -194,6 +197,40 @@ class FileActions(private val context: Context, private val graph: Graph) {
         }
     }
 
+    /** Drag and drop: moves files and folders into [destDir], with Undo. */
+    fun moveInto(paths: Collection<String>, destDir: File) {
+        val sources = files(paths).filter { it.exists() && it.parentFile?.absolutePath != destDir.absolutePath }
+        if (sources.isEmpty()) return
+        if (sources.any { it.isDirectory && FileOps.isSameOrInside(destDir, it) }) {
+            notify("A folder can't be moved into itself")
+            return
+        }
+        val name = graph.volumes().firstOrNull { it.root.absolutePath == destDir.absolutePath }?.label ?: destDir.name
+        run("Moving", measure = { sources.sumOf { FileOps.totalSize(it) } }) { onBytes, cancelled ->
+            val moved = mutableListOf<Pair<File, File>>() // where it was → where it is now
+            try {
+                for (src in sources) {
+                    val target = FileOps.move(src, destDir, onBytes, cancelled)
+                    graph.favorites.replace(src.absolutePath, target.absolutePath)
+                    moved += src to target
+                }
+            } finally {
+                Opener.notifyMedia(context, moved.flatMap { (from, to) -> listOf(from.absolutePath, to.absolutePath) })
+            }
+            UserMessage("Moved ${items(moved.size)} to $name", "Undo") { moveBack(moved) }
+        }
+    }
+
+    private fun moveBack(moved: List<Pair<File, File>>) {
+        run("Moving back") { _, cancelled ->
+            val back = moved.map { (from, now) ->
+                FileOps.move(now, from.parentFile!!, {}, cancelled).also { graph.favorites.replace(now.absolutePath, it.absolutePath) }
+            }
+            Opener.notifyMedia(context, moved.map { it.second.absolutePath } + back.map { it.absolutePath })
+            UserMessage("Moved ${items(back.size)} back")
+        }
+    }
+
     // ---- Zip ----
 
     fun compress(paths: Collection<String>, destDir: File) {
@@ -226,34 +263,91 @@ class FileActions(private val context: Context, private val graph: Graph) {
 
     // ---- Hidden folder ----
 
-    fun moveToVault(paths: Collection<String>, onDone: () -> Unit = {}) {
-        val sources = files(paths).filter { it.isFile }
-        if (sources.isEmpty()) {
-            notify("Only files can go into the hidden folder")
+    /** Hides files and whole folders into [into], a folder inside the hidden folder ("" is the top). */
+    fun moveToVault(paths: Collection<String>, into: String = graph.vault.openFolder.value, onDone: () -> Unit = {}) {
+        val protected = setOf(graph.storageRoot, File(graph.storageRoot, "Android")).map { it.absolutePath }
+        if (paths.any { File(it).absolutePath in protected }) {
+            notify("Internal storage and its Android folder can't be hidden")
             return
         }
-        run("Moving to hidden folder", sources.sumOf { it.length() } * 2) { onBytes, _ ->
-            val count = graph.vault.addAll(sources, deleteOriginal = true) { onBytes(it * 2) }.size
-            graph.favorites.remove(sources.map { it.absolutePath })
-            graph.review.forget(paths.toSet())
-            Opener.notifyMedia(context, sources.map { it.absolutePath })
+        val sources = files(paths).filter { it.exists() }
+        if (sources.isEmpty()) return
+        var contained: List<File> = emptyList()
+        run("Moving to hidden folder", measure = {
+            contained = sources.flatMap { if (it.isDirectory) it.walkTopDown().toList() else listOf(it) }
+            contained.filter { it.isFile }.sumOf { it.length() }
+        }) { onBytes, _ ->
+            try {
+                graph.vault.hide(sources, into, onBytes)
+            } finally {
+                // Also when only part of it worked: whatever left normal storage must leave the gallery too.
+                val gone = contained.map { it.absolutePath }.filterNot { File(it).exists() }
+                graph.favorites.remove(gone)
+                graph.review.forget(gone.toSet())
+                Opener.notifyMedia(context, gone)
+            }
             withContext(Dispatchers.Main) { onDone() }
-            UserMessage("Moved ${items(count)} to the hidden folder")
+            UserMessage("Moved ${items(sources.size)} to the hidden folder")
         }
     }
 
-    fun restoreFromVault(items: List<VaultItem>) {
-        run("Restoring", items.sumOf { it.size }) { _, _ ->
-            val restored = graph.vault.restoreAll(items, graph.downloadsDir).map { it.absolutePath }
-            Opener.notifyMedia(context, restored)
-            UserMessage("Restored ${items(restored.size)}")
+    /** Moves hidden files and folders back to normal storage (where they came from, or Download). */
+    fun restoreFromVault(items: List<VaultItem>, folders: List<String> = emptyList()) {
+        if (items.isEmpty() && folders.isEmpty()) return
+        run("Moving out of hidden folder") { _, _ ->
+            val restored = graph.vault.restoreEverything(items, folders, graph.downloadsDir)
+            Opener.notifyMedia(context, restored.flatMap { f -> f.walkTopDown().filter { it.isFile }.map { it.absolutePath }.toList() })
+            UserMessage("Moved ${items(items.size + folders.size)} out of the hidden folder")
         }
     }
 
-    fun deleteFromVault(items: List<VaultItem>) {
+    fun deleteFromVault(items: List<VaultItem>, folders: List<String> = emptyList()) {
+        if (items.isEmpty() && folders.isEmpty()) return
         run("Deleting") { _, _ ->
-            graph.vault.deleteAll(items)
-            UserMessage("Deleted ${items(items.size)} for good")
+            graph.vault.deleteEverything(items, folders)
+            UserMessage("Deleted ${items(items.size + folders.size)} for good")
+        }
+    }
+
+    fun createVaultFolder(parent: String, name: String, onCreated: (String) -> Unit = {}) {
+        run("Creating folder") { _, _ ->
+            val path = graph.vault.createFolder(parent, name.trim())
+            withContext(Dispatchers.Main) { onCreated(path) }
+            null
+        }
+    }
+
+    fun renameInVault(item: VaultItem?, folder: String?, newName: String) {
+        run("Renaming") { _, _ ->
+            if (item != null) graph.vault.renameItem(item.id, newName.trim())
+            if (folder != null) graph.vault.renameFolder(folder, newName.trim())
+            null
+        }
+    }
+
+    /** Moves hidden files and folders to another folder inside the hidden folder, with Undo. */
+    fun moveInVault(items: List<VaultItem>, folders: List<String>, destination: String, onDone: () -> Unit = {}) {
+        val moving = items.filter { it.folder != destination }
+        val movingFolders = folders.filter { VaultManager.parentOf(it) != destination }
+        if (moving.isEmpty() && movingFolders.isEmpty()) return
+        if (movingFolders.any { VaultManager.isInside(destination, it) }) {
+            notify("A folder can't be moved into itself")
+            return
+        }
+        run("Moving") { _, _ ->
+            val movedTo = graph.vault.move(moving.map { it.id }, movingFolders, destination)
+            withContext(Dispatchers.Main) { onDone() }
+            val name = if (destination.isEmpty()) "Hidden folder" else VaultManager.nameOf(destination)
+            UserMessage("Moved ${items(moving.size + movingFolders.size)} to $name", "Undo") {
+                // Back to where each one was.
+                run("Moving back") { _, _ ->
+                    moving.groupBy { it.folder }.forEach { (from, list) -> graph.vault.move(list.map { it.id }, emptyList(), from) }
+                    movedTo.entries.groupBy { VaultManager.parentOf(it.key) }.forEach { (from, list) ->
+                        graph.vault.move(emptyList(), list.map { it.value }, from)
+                    }
+                    null
+                }
+            }
         }
     }
 }

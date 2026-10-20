@@ -28,6 +28,7 @@ import kotlin.math.min
 /**
  * Long-press a file, then drag across others: everything from the first to the one under your finger
  * gets selected. Near the top or bottom edge the list scrolls by itself.
+ * Long-press a file that is already selected to drag the selection somewhere else (see DragDrop.kt).
  */
 class DragSelect {
     internal var anchor = -1
@@ -54,7 +55,10 @@ fun Modifier.dragToSelect(
     itemAt: (Offset) -> String?,
     scrollBy: suspend (Float) -> Float,
     enabled: Boolean = true,
+    /** Long-press on something already selected: start dragging the selection instead. Returns true if it did. */
+    onStartMove: ((key: String, position: Offset) -> Boolean)? = null,
 ): Modifier {
+    val startMove by rememberUpdatedState(onStartMove)
     val currentKeys by rememberUpdatedState(keys)
     val currentSelection by rememberUpdatedState(selection)
     val change by rememberUpdatedState(onSelectionChange)
@@ -90,6 +94,11 @@ fun Modifier.dragToSelect(
                 val index = currentKeys.indexOf(key)
                 if (index < 0) return@detectDragGesturesAfterLongPress
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                if (key in currentSelection && startMove?.invoke(key, position) == true) {
+                    state.anchor = -1
+                    state.swallowNextClick = true
+                    return@detectDragGesturesAfterLongPress
+                }
                 state.anchor = index
                 state.current = index
                 state.base = currentSelection

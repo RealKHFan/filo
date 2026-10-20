@@ -43,7 +43,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onLongClick
@@ -77,6 +82,8 @@ fun FileRow(
     longPressFromParent: Boolean = false,
     /** Always show a checkbox (with ⋮ next to it when [onMore] is set). */
     selectedMark: Boolean = false,
+    /** Being dragged somewhere else right now: shown faded. */
+    lifted: Boolean = false,
 ) {
     val background = when {
         selected -> MaterialTheme.colorScheme.secondaryContainer
@@ -94,6 +101,7 @@ fun FileRow(
     Row(
         Modifier
             .fillMaxWidth()
+            .alpha(if (lifted) 0.4f else 1f)
             .padding(horizontal = 8.dp, vertical = 2.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(background)
@@ -155,11 +163,13 @@ fun FileGridCell(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     highlighted: Boolean = false,
+    lifted: Boolean = false,
 ) {
     val tiny = columns >= 5
     val compact = columns >= 4
     Column(
         Modifier
+            .alpha(if (lifted) 0.4f else 1f)
             .padding(if (compact) 2.dp else 4.dp)
             .clip(RoundedCornerShape(if (compact) 10.dp else 16.dp))
             .background(
@@ -224,6 +234,18 @@ fun FileGridCell(
 }
 
 /**
+ * Lets selected files be dragged out of a list and dropped onto folders.
+ * [space] keeps storage and the hidden folder apart, [here] identifies the open folder,
+ * [onDropInto] gets the folder dropped on, or null for the open folder itself.
+ */
+class PaneDrop(
+    val space: String,
+    val here: String,
+    val hereLabel: String,
+    val onDropInto: (target: FileEntry?, paths: Set<String>) -> Unit,
+)
+
+/**
  * A list or grid of files.
  * - Tap opens (or toggles while selecting); long-press and drag selects a range.
  * - Pinch changes the size ([onLevelChange]).
@@ -241,13 +263,21 @@ fun FileListPane(
     onLevelChange: ((ViewLevel) -> Unit)?,
     modifier: Modifier = Modifier,
     selectable: (FileEntry) -> Boolean = { true },
+    /** A tap selects files instead of opening them (picking files). */
     tapSelects: Boolean = false,
     highlight: String? = null,
     contentPadding: PaddingValues = PaddingValues(bottom = 96.dp),
+    /** Selected files can be dragged onto folders (see DragDrop.kt). */
+    drop: PaneDrop? = null,
 ) {
     val drag = remember { DragSelect() }
+    val fileDrag = LocalFileDrag.current
+    val thumbs = LocalThumbs.current
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
+    var paneCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val hoveredKey = fileDrag.hovered?.key
+    val dragging = fileDrag.session?.paths.orEmpty()
     val keys = remember(entries, selectable) { entries.filter(selectable).map { it.path } }
     var flash by remember(highlight) { mutableStateOf(highlight) }
 
@@ -268,13 +298,67 @@ fun FileListPane(
         if (drag.consumeClick()) return
         when {
             selection.isNotEmpty() && selectable(entry) -> toggle(entry)
-            tapSelects && selectable(entry) -> toggle(entry)
+            // Folders still open with a tap; long-press selects them.
+            tapSelects && selectable(entry) && !entry.isDirectory -> toggle(entry)
             else -> onOpen(entry)
         }
     }
 
+    fun gridItemAt(p: Offset): String? = gridState.layoutInfo.visibleItemsInfo.firstOrNull {
+        p.x >= it.offset.x && p.x < it.offset.x + it.size.width && p.y >= it.offset.y && p.y < it.offset.y + it.size.height
+    }?.key as? String
+
+    fun listItemAt(p: Offset): String? =
+        listState.layoutInfo.visibleItemsInfo.firstOrNull { p.y >= it.offset && p.y < it.offset + it.size }?.key as? String
+
+    val byPath = remember(entries) { entries.associateBy { it.path } }
+    val startMove: ((String, Offset) -> Boolean)? = drop?.let { d ->
+        { key, position ->
+            val entry = byPath[key]
+            val coordinates = paneCoordinates
+            if (entry == null || coordinates == null || !coordinates.isAttached) {
+                false
+            } else {
+                fileDrag.start(DragSession(d.space, d.here, selection, entry, thumbs), coordinates.localToRoot(position))
+                true
+            }
+        }
+    }
+    val dropZone = if (drop == null) {
+        Modifier
+    } else {
+        val edge = with(LocalDensity.current) { 64.dp.toPx() }
+        Modifier.dropZone(
+            space = drop.space,
+            scroll = { local, height ->
+                val speed = when {
+                    local.y < edge -> -(edge - local.y) / edge * 24f
+                    local.y > height - edge -> (local.y - (height - edge)) / edge * 24f
+                    else -> 0f
+                }
+                val state: androidx.compose.foundation.gestures.ScrollableState = if (level.isGrid) gridState else listState
+                val canMove = (speed < 0 && state.canScrollBackward) || (speed > 0 && state.canScrollForward)
+                if (canMove) state.scrollBy(speed)
+                canMove
+            },
+        ) { local, session ->
+            val entry = (if (level.isGrid) gridItemAt(local) else listItemAt(local))?.let { byPath[it] }
+            when {
+                entry != null && entry.isDirectory && entry.path !in session.paths -> DropSpot(
+                    key = "folder:" + entry.path,
+                    label = entry.name,
+                    onDrop = { paths -> drop.onDropInto(entry, paths) },
+                    onOpen = { onOpen(entry) },
+                )
+                // Empty space (or a file): into the folder that's open, unless that's where they came from.
+                session.origin != drop.here -> DropSpot("here:" + drop.here, drop.hereLabel, { paths -> drop.onDropInto(null, paths) })
+                else -> null
+            }
+        }
+    }
+
     val resize = if (onLevelChange != null) Modifier.pinchToResize(level, onLevelChange) else Modifier
-    Box(modifier.fillMaxSize().then(resize)) {
+    Box(modifier.fillMaxSize().then(resize).onGloballyPositioned { paneCoordinates = it }.then(dropZone)) {
         if (level.isGrid) {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(level.columns),
@@ -284,12 +368,9 @@ fun FileListPane(
                     keys = keys,
                     selection = selection,
                     onSelectionChange = onSelectionChange,
-                    itemAt = { p ->
-                        gridState.layoutInfo.visibleItemsInfo.firstOrNull {
-                            p.x >= it.offset.x && p.x < it.offset.x + it.size.width && p.y >= it.offset.y && p.y < it.offset.y + it.size.height
-                        }?.key as? String
-                    },
+                    itemAt = ::gridItemAt,
                     scrollBy = { gridState.scrollBy(it) },
+                    onStartMove = startMove,
                 ),
                 contentPadding = PaddingValues(start = 6.dp, end = 6.dp, bottom = contentPadding.calculateBottomPadding()),
             ) {
@@ -301,7 +382,8 @@ fun FileListPane(
                         columns = level.columns,
                         onClick = { tap(entry) },
                         onLongClick = { toggle(entry) },
-                        highlighted = entry.path == flash,
+                        highlighted = entry.path == flash || hoveredKey == "folder:" + entry.path,
+                        lifted = entry.path in dragging,
                     )
                 }
             }
@@ -313,10 +395,9 @@ fun FileListPane(
                     keys = keys,
                     selection = selection,
                     onSelectionChange = onSelectionChange,
-                    itemAt = { p ->
-                        listState.layoutInfo.visibleItemsInfo.firstOrNull { p.y >= it.offset && p.y < it.offset + it.size }?.key as? String
-                    },
+                    itemAt = ::listItemAt,
                     scrollBy = { listState.scrollBy(it) },
+                    onStartMove = startMove,
                 ),
                 contentPadding = contentPadding,
             ) {
@@ -330,8 +411,9 @@ fun FileListPane(
                         onLongClick = { toggle(entry) },
                         onMore = onMore?.let { { it(entry) } },
                         large = level == ViewLevel.LIST_LARGE,
-                        highlighted = entry.path == flash,
+                        highlighted = entry.path == flash || hoveredKey == "folder:" + entry.path,
                         longPressFromParent = true,
+                        lifted = entry.path in dragging,
                     )
                 }
             }

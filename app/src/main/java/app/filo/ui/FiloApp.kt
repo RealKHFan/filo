@@ -149,9 +149,13 @@ private fun FiloNav(pendingRoute: StateFlow<String?>, onRouteHandled: () -> Unit
     // Screens opened from inside it (a photo, "Add files") keep it open.
     DisposableEffect(nav) {
         val listener = NavController.OnDestinationChangedListener { controller, _, _ ->
-            if (graph.vault.unlocked.value && !controller.hasVaultOpen()) {
-                graph.vault.lock()
-                graph.vault.clearTemp()
+            if (!controller.hasVaultOpen()) {
+                // Files waiting for "Hide here" stay waiting only while the hidden folder is open.
+                graph.actions.pendingVault.value = emptyList()
+                if (graph.vault.unlocked.value) {
+                    graph.vault.lock()
+                    graph.vault.clearTemp()
+                }
             }
         }
         nav.addOnDestinationChangedListener(listener)
@@ -167,8 +171,11 @@ private fun FiloNav(pendingRoute: StateFlow<String?>, onRouteHandled: () -> Unit
 
     val backStack by nav.currentBackStackEntryAsState()
     val onHome = backStack?.destination?.route == Routes.HOME
+    val fileDrag = remember { FileDrag() }
+    // A screen change that isn't part of the drag (back button, a dialog) ends it.
+    LaunchedEffect(backStack?.destination?.route) { fileDrag.cancel() }
 
-    Box(Modifier.fillMaxSize()) {
+    CompositionLocalProvider(LocalFileDrag provides fileDrag) { FileDragHost(fileDrag) {
         NavHost(
             navController = nav,
             startDestination = Routes.HOME,
@@ -227,7 +234,7 @@ private fun FiloNav(pendingRoute: StateFlow<String?>, onRouteHandled: () -> Unit
             snackbar,
             Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = if (onHome) 80.dp else 0.dp),
         )
-    }
+    } }
 
     OperationDialog()
 }

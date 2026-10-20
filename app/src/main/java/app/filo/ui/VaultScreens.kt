@@ -70,6 +70,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.testTag
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -109,6 +111,37 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
+import android.util.LruCache
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.automirrored.outlined.List
+import androidx.compose.material.icons.automirrored.outlined.Sort
+import androidx.compose.material.icons.outlined.CreateNewFolder
+import androidx.compose.material.icons.outlined.DriveFileMove
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material.icons.outlined.Password
+import androidx.compose.material.icons.outlined.SelectAll
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.key
+import androidx.compose.runtime.rememberUpdatedState
+import app.filo.data.FileEntry
+import app.filo.data.NaturalOrder
+import app.filo.data.SortField
+import app.filo.data.SortOrder
+import app.filo.data.ViewLevel
+import app.filo.data.ViewPrefs
+import app.filo.data.sortedBy
+import java.io.File
 import javax.crypto.Cipher
 
 // ---------------------------------------------------------------- helpers
@@ -163,6 +196,27 @@ fun SecureWindow() {
     DisposableEffect(activity) {
         activity?.let(SecureScreens::enter)
         onDispose { activity?.let(SecureScreens::leave) }
+    }
+}
+
+/**
+ * Covers the hidden folder as soon as Filo isn't the app in front, e.g. in the recent-apps view,
+ * which shows Filo live (screenshot blocking can't hide a live view). Call it last, so it's on top.
+ */
+@Composable
+fun PrivacyCurtain(lifecycle: androidx.lifecycle.Lifecycle? = null) {
+    val source = lifecycle ?: (LocalContext.current.findActivity() as? androidx.lifecycle.LifecycleOwner)?.lifecycle ?: return
+    val state by source.currentStateFlow.collectAsState()
+    if (state.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) return
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface)
+            .testTag("privacy_curtain")
+            .semantics { contentDescription = "Filo" },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(Icons.Outlined.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(48.dp))
     }
 }
 
@@ -323,10 +377,9 @@ fun VaultScreen(nav: NavController) {
     val pending by graph.actions.pendingVault.collectAsStateWithLifecycle()
     var justCreated by remember { mutableStateOf(false) }
     SecureWindow()
-    // Leaving without unlocking cancels "move to hidden folder" for the waiting files.
-    DisposableEffect(Unit) { onDispose { graph.actions.pendingVault.value = emptyList() } }
     if (setUp && unlocked) {
         VaultContent(nav, offerFingerprint = justCreated, onOfferDone = { justCreated = false })
+        PrivacyCurtain()
         return
     }
     Scaffold(
@@ -340,7 +393,7 @@ fun VaultScreen(nav: NavController) {
         Column(Modifier.padding(padding)) {
             if (pending.isNotEmpty()) {
                 Text(
-                    "Unlock to hide ${itemCount(pending.size).replace("item", "file")}",
+                    "Unlock to hide ${itemCount(pending.size)}",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     textAlign = TextAlign.Center,
@@ -350,6 +403,7 @@ fun VaultScreen(nav: NavController) {
             if (!setUp) VaultSetup(onCreated = { justCreated = true }) else VaultUnlock()
         }
     }
+    PrivacyCurtain()
 }
 
 @Composable
@@ -595,182 +649,404 @@ private fun EraseDialog(onDismiss: () -> Unit) {
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+// ---------------------------------------------------------------- Inside the hidden folder
+
+private const val ITEM = "vault:"
+private const val DIR = "vaultdir:"
+private val VAULT_ROOT = File("/vault")
+
+/** Pictures first as a grid, newest first, until you change it (per folder). */
+private val VAULT_DEFAULTS = ViewPrefs(ViewLevel.GRID_3, SortOrder(SortField.DATE, ascending = false))
+
+/** Files and folders directly inside [folder], as list entries. */
+internal fun vaultEntries(items: List<VaultItem>, folders: Set<String>, folder: String, showHidden: Boolean = true): List<FileEntry> {
+    fun visible(name: String) = showHidden || !name.startsWith(".")
+    val children = folders.filter { it.isNotEmpty() && visible(VaultManager.nameOf(it)) }.groupBy { VaultManager.parentOf(it) }
+    val filesIn = items.filter { visible(it.name) }.groupBy { it.folder }
+    val dirs = children[folder].orEmpty().map { path ->
+        FileEntry(
+            path = DIR + path,
+            name = VaultManager.nameOf(path),
+            isDirectory = true,
+            size = 0,
+            lastModified = items.filter { VaultManager.isInside(it.folder, path) }.maxOfOrNull { it.addedAt } ?: 0L,
+            childCount = filesIn[path].orEmpty().size + children[path].orEmpty().size,
+        )
+    }
+    val files = filesIn[folder].orEmpty().map { FileEntry(ITEM + it.id, it.name, false, it.size, it.addedAt) }
+    return dirs + files
+}
+
+private fun vaultFolderOf(path: String) = if (path.startsWith(DIR)) path.removePrefix(DIR) else null
+
+/** A part of the hidden folder's path bar back to a folder path ("" is the top). */
+private fun vaultPathOf(file: File) = file.absolutePath.removePrefix(VAULT_ROOT.absolutePath).trim('/')
+
+/** Folder paths sorted like a tree: every folder right after its parent. */
+private fun treeOrder(folders: Collection<String>): List<String> = folders.sortedWith { a, b ->
+    val x = a.split('/')
+    val y = b.split('/')
+    for (i in 0 until minOf(x.size, y.size)) {
+        val c = NaturalOrder.compare(x[i], y[i])
+        if (c != 0) return@sortedWith c
+    }
+    x.size - y.size
+}
+
+/** Previews of hidden pictures, decrypted in memory and kept only while the folder is open. */
+private class VaultThumbs(private val vault: VaultManager, private val lookup: () -> Map<String, VaultItem>) : ThumbProvider {
+    private val cache = LruCache<String, ImageBitmap>(200)
+
+    @Composable
+    override fun Thumb(entry: FileEntry, size: Dp, modifier: Modifier, corner: Dp) {
+        val item = lookup()[entry.path.removePrefix(ITEM)]
+        val bitmap by produceState(cache.get(entry.path), entry.path) {
+            if (value == null && item != null && item.kind == FileKind.IMAGE) {
+                value = withContext(Dispatchers.IO) {
+                    try {
+                        vault.readBytes(item, 25_000_000L)?.let { decodeImage(it, 256) }
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                value?.let { cache.put(entry.path, it) }
+            }
+        }
+        val bmp = bitmap
+        if (bmp != null) {
+            Image(bmp, contentDescription = null, contentScale = ContentScale.Crop, modifier = modifier.size(size).clip(RoundedCornerShape(corner)))
+        } else {
+            KindIcon(entry.kind, size, modifier, corner)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun VaultContent(nav: NavController, offerFingerprint: Boolean, onOfferDone: () -> Unit) {
     val graph = LocalGraph.current
+    val vault = graph.vault
+    val actions = graph.actions
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val items by graph.vault.items.collectAsStateWithLifecycle()
-    val pending by graph.actions.pendingVault.collectAsStateWithLifecycle()
-    var selection by remember { mutableStateOf(emptySet<String>()) }
-    var menu by remember { mutableStateOf(false) }
-    var changePin by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf(false) }
-    var fingerprintOn by remember { mutableStateOf(graph.vault.biometricEnabled) }
-    val drag = remember { DragSelect() }
-    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    val items by vault.items.collectAsStateWithLifecycle()
+    val folders by vault.folders.collectAsStateWithLifecycle()
+    val folder by vault.openFolder.collectAsStateWithLifecycle()
+    val pending by actions.pendingVault.collectAsStateWithLifecycle()
+    val views by graph.views.all.collectAsStateWithLifecycle()
+    val settings by graph.settings.state.collectAsStateWithLifecycle()
+    val viewKey = remember(folder) { vault.viewKey(folder) }
+    val view = views[viewKey] ?: VAULT_DEFAULTS
+    fun setView(next: ViewPrefs) = graph.views.set(viewKey, next)
 
-    LaunchedEffect(pending) {
-        if (pending.isNotEmpty()) {
-            graph.actions.moveToVault(pending)
-            graph.actions.pendingVault.value = emptyList()
+    var selection by remember(folder) { mutableStateOf(emptySet<String>()) }
+    var menu by remember { mutableStateOf(false) }
+    var sortMenu by remember { mutableStateOf(false) }
+    var changePin by remember { mutableStateOf(false) }
+    var fingerprintOn by remember { mutableStateOf(vault.biometricEnabled) }
+    var sheetFor by remember { mutableStateOf<FileEntry?>(null) }
+    var renaming by remember { mutableStateOf<FileEntry?>(null) }
+    var newFolder by remember { mutableStateOf(false) }
+    var moving by remember { mutableStateOf<List<String>?>(null) }
+    var deleting by remember { mutableStateOf<List<String>?>(null) }
+
+    val byId = remember(items) { items.associateBy { it.id } }
+    val currentById by rememberUpdatedState(byId)
+    val thumbs = remember { VaultThumbs(vault) { currentById } }
+    val entries = remember(items, folders, folder, view.sort, settings.showHidden) {
+        vaultEntries(items, folders, folder, settings.showHidden).sortedBy(view.sort)
+    }
+
+    fun itemOf(path: String) = if (path.startsWith(ITEM)) byId[path.removePrefix(ITEM)] else null
+    fun goTo(path: String) {
+        vault.openFolder.value = path
+    }
+
+    // The open folder was moved or deleted meanwhile: go to the nearest one that still exists.
+    LaunchedEffect(folder, folders) {
+        var f = folder
+        while (f.isNotEmpty() && f !in folders) f = VaultManager.parentOf(f)
+        if (f != folder) goTo(f)
+    }
+    LaunchedEffect(entries) {
+        if (selection.isNotEmpty()) {
+            val present = entries.map { it.path }.toSet()
+            selection = selection.filter { it in present }.toSet()
         }
     }
-    androidx.activity.compose.BackHandler(enabled = selection.isNotEmpty()) { selection = emptySet() }
+    androidx.activity.compose.BackHandler(enabled = selection.isNotEmpty() || folder.isNotEmpty()) {
+        if (selection.isNotEmpty()) selection = emptySet() else goTo(VaultManager.parentOf(folder))
+    }
 
-    val selected = items.filter { it.id in selection }
-
-    fun open(item: VaultItem) {
+    fun open(entry: FileEntry) {
+        vaultFolderOf(entry.path)?.let {
+            goTo(it)
+            return
+        }
+        val item = itemOf(entry.path) ?: return
         if (item.kind == FileKind.IMAGE) {
             nav.navigate(Routes.vaultImage(item.id))
             return
         }
         scope.launch {
             try {
-                val file = withContext(Dispatchers.IO) { graph.vault.decryptForViewing(item) }
-                if (!Opener.open(context, file)) graph.actions.notify("No app on your phone can open this file")
+                val file = withContext(Dispatchers.IO) { vault.decryptForViewing(item) }
+                if (!Opener.open(context, file)) actions.notify("No app on your phone can open this file")
             } catch (e: Exception) {
-                graph.actions.notify(e.message ?: "Couldn't open ${item.name}")
+                actions.notify(e.message ?: "Couldn't open ${item.name}")
             }
         }
     }
 
-    Scaffold(
-        topBar = {
-            if (selection.isNotEmpty()) {
-                TopAppBar(
-                    navigationIcon = { IconButton(onClick = { selection = emptySet() }) { Icon(Icons.Outlined.Close, "Clear selection") } },
-                    title = { Text("${selection.size} selected") },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                    actions = {
-                        IconButton(onClick = {
-                            graph.actions.restoreFromVault(selected)
-                            selection = emptySet()
-                        }) { Icon(Icons.Outlined.RestoreFromTrash, "Move out of hidden folder") }
-                        IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Outlined.DeleteForever, "Delete for good") }
-                    },
-                )
-            } else {
-                TopAppBar(
-                    title = { Text("Hidden folder") },
-                    navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-                    actions = {
-                        IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, "More options") }
-                        DropdownMenu(menu, onDismissRequest = { menu = false }) {
-                            if (canUseFingerprint(context)) {
+    fun dropInto(destination: String, paths: Set<String>) {
+        val all = vault.items.value.associateBy { it.id }
+        actions.moveInVault(paths.mapNotNull { p -> if (p.startsWith(ITEM)) all[p.removePrefix(ITEM)] else null }, paths.mapNotNull(::vaultFolderOf), destination)
+        selection = emptySet()
+    }
+
+    fun moveOut(paths: Collection<String>) {
+        actions.restoreFromVault(paths.mapNotNull(::itemOf), paths.mapNotNull(::vaultFolderOf))
+        selection = emptySet()
+    }
+
+    CompositionLocalProvider(LocalThumbs provides thumbs) {
+        Scaffold(
+            topBar = {
+                if (selection.isNotEmpty()) {
+                    var more by remember { mutableStateOf(false) }
+                    TopAppBar(
+                        navigationIcon = { IconButton(onClick = { selection = emptySet() }) { Icon(Icons.Outlined.Close, "Clear selection") } },
+                        title = { Text("${selection.size} selected") },
+                        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                        actions = {
+                            IconButton(onClick = { selection = entries.map { it.path }.toSet() }) { Icon(Icons.Outlined.SelectAll, "Select all") }
+                            IconButton(onClick = { moveOut(selection) }) { Icon(Icons.Outlined.LockOpen, "Move out of hidden folder") }
+                            IconButton(onClick = { deleting = selection.toList() }) { Icon(Icons.Outlined.DeleteForever, "Delete for good") }
+                            IconButton(onClick = { more = true }) { Icon(Icons.Outlined.MoreVert, "More actions") }
+                            DropdownMenu(more, onDismissRequest = { more = false }) {
                                 DropdownMenuItem(
-                                    text = { Text(if (fingerprintOn) "Turn off fingerprint unlock" else "Turn on fingerprint unlock") },
-                                    leadingIcon = { Icon(Icons.Outlined.Fingerprint, null) },
+                                    text = { Text("Move to folder…") },
+                                    leadingIcon = { @Suppress("DEPRECATION") Icon(Icons.Outlined.DriveFileMove, null) },
+                                    onClick = {
+                                        more = false
+                                        moving = selection.toList()
+                                    },
+                                )
+                                if (selection.size == 1) {
+                                    DropdownMenuItem(
+                                        text = { Text("Rename") },
+                                        leadingIcon = { Icon(Icons.Outlined.Edit, null) },
+                                        onClick = {
+                                            more = false
+                                            renaming = entries.firstOrNull { it.path in selection }
+                                        },
+                                    )
+                                }
+                            }
+                        },
+                    )
+                } else {
+                    TopAppBar(
+                        title = {
+                            Text(if (folder.isEmpty()) "Hidden folder" else VaultManager.nameOf(folder), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        },
+                        navigationIcon = {
+                            IconButton(onClick = { if (folder.isEmpty()) nav.popBackStack() else goTo(VaultManager.parentOf(folder)) }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                            }
+                        },
+                        actions = {
+                            IconButton(onClick = { setView(view.copy(level = if (view.level.isGrid) ViewLevel.LIST else ViewLevel.GRID_3)) }) {
+                                if (view.level.isGrid) Icon(Icons.AutoMirrored.Outlined.List, "Show as list") else Icon(Icons.Outlined.GridView, "Show as grid")
+                            }
+                            IconButton(onClick = { sortMenu = true }) { Icon(Icons.AutoMirrored.Outlined.Sort, "Sort") }
+                            SortMenu(sortMenu, view.sort, onDismiss = { sortMenu = false }, onChange = { setView(view.copy(sort = it)) })
+                            IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, "More options") }
+                            DropdownMenu(menu, onDismissRequest = { menu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("New folder") },
+                                    leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, null) },
                                     onClick = {
                                         menu = false
-                                        if (fingerprintOn) {
-                                            graph.vault.disableBiometric()
-                                            graph.biometricKey.delete()
-                                            fingerprintOn = false
-                                            graph.actions.notify("Fingerprint unlock is off")
-                                        } else {
-                                            enableFingerprint(context, graph) { fingerprintOn = it }
-                                        }
+                                        newFolder = true
+                                    },
+                                )
+                                if (canUseFingerprint(context)) {
+                                    DropdownMenuItem(
+                                        text = { Text(if (fingerprintOn) "Turn off fingerprint unlock" else "Turn on fingerprint unlock") },
+                                        leadingIcon = { Icon(Icons.Outlined.Fingerprint, null) },
+                                        onClick = {
+                                            menu = false
+                                            if (fingerprintOn) {
+                                                vault.disableBiometric()
+                                                graph.biometricKey.delete()
+                                                fingerprintOn = false
+                                                actions.notify("Fingerprint unlock is off")
+                                            } else {
+                                                enableFingerprint(context, graph) { fingerprintOn = it }
+                                            }
+                                        },
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = { Text("Change PIN") },
+                                    leadingIcon = { Icon(Icons.Outlined.Password, null) },
+                                    onClick = {
+                                        menu = false
+                                        changePin = true
                                     },
                                 )
                             }
-                            DropdownMenuItem(text = { Text("Change PIN") }, onClick = {
-                                menu = false
-                                changePin = true
-                            })
-                        }
-                    },
-                )
-            }
-        },
-        floatingActionButton = {
-            if (selection.isEmpty()) {
-                ExtendedFloatingActionButton(
-                    onClick = { nav.navigate(Routes.folder(graph.storageRoot.absolutePath, pickForVault = true)) },
-                    icon = { Icon(Icons.Outlined.Add, null) },
-                    text = { Text("Add files") },
-                )
-            }
-        },
-    ) { padding ->
-        if (items.isEmpty()) {
-            Column(Modifier.padding(padding)) {
-                EmptyState(
-                    Icons.Outlined.Lock,
-                    "Your hidden folder is empty",
-                    "Tap Add files, or choose Move to hidden folder on any file. Files are encrypted and removed from their old place.",
-                )
-            }
-            return@Scaffold
-        }
-        val sortedItems = items.sortedByDescending { it.addedAt }
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(112.dp),
-            state = gridState,
-            modifier = Modifier.fillMaxSize().padding(padding).dragToSelect(
-                state = drag,
-                keys = sortedItems.map { it.id },
-                selection = selection,
-                onSelectionChange = { selection = it },
-                itemAt = { p ->
-                    gridState.layoutInfo.visibleItemsInfo.firstOrNull {
-                        p.x >= it.offset.x && p.x < it.offset.x + it.size.width && p.y >= it.offset.y && p.y < it.offset.y + it.size.height
-                    }?.key as? String
-                },
-                scrollBy = { gridState.scrollBy(it) },
-            ),
-            contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = 96.dp),
-        ) {
-            items(sortedItems, key = { it.id }) { item ->
-                val isSelected = item.id in selection
-                Column(
-                    Modifier
-                        .padding(4.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(if (isSelected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface)
-                        .clickable {
-                            when {
-                                drag.consumeClick() -> Unit
-                                selection.isNotEmpty() -> selection = if (isSelected) selection - item.id else selection + item.id
-                                else -> open(item)
-                            }
-                        }
-                        .semantics { onLongClick("Select") { selection = if (isSelected) selection - item.id else selection + item.id; true } }
-                        .padding(6.dp),
-                ) {
-                    Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
-                        VaultThumb(item, Modifier.fillMaxSize())
-                        if (isSelected) {
-                            Icon(
-                                Icons.Outlined.CheckCircle,
-                                "Selected",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).background(MaterialTheme.colorScheme.surface, CircleShape),
-                            )
-                        }
+                        },
+                    )
+                }
+            },
+            bottomBar = {
+                // Coming from "Move to hidden folder": open the folder it should go in, then Hide here.
+                if (pending.isNotEmpty() && selection.isEmpty()) {
+                    ActionBar(
+                        text = "${itemCount(pending.size)} to hide",
+                        confirm = "Hide here",
+                        enabled = true,
+                        onCancel = {
+                            actions.pendingVault.value = emptyList()
+                            nav.popBackStack()
+                        },
+                        onConfirm = {
+                            actions.moveToVault(pending, into = folder)
+                            actions.pendingVault.value = emptyList()
+                        },
+                    )
+                }
+            },
+            floatingActionButton = {
+                if (selection.isEmpty() && pending.isEmpty()) {
+                    ExtendedFloatingActionButton(
+                        onClick = { nav.navigate(Routes.folder(graph.storageRoot.absolutePath, pickForVault = true)) },
+                        icon = { Icon(Icons.Outlined.Add, null) },
+                        text = { Text("Add files") },
+                    )
+                }
+            },
+        ) { padding ->
+            Column(Modifier.fillMaxSize().padding(padding)) {
+                if (folder.isNotEmpty()) {
+                    Breadcrumbs(
+                        "Hidden folder",
+                        VAULT_ROOT,
+                        File(VAULT_ROOT, folder),
+                        onOpen = { goTo(vaultPathOf(it)) },
+                        drop = CrumbDrop(VAULT_SPACE, ::vaultPathOf) { target, paths -> dropInto(vaultPathOf(target), paths) },
+                    )
+                }
+                val paneDrop = PaneDrop(VAULT_SPACE, folder, if (folder.isEmpty()) "Hidden folder" else VaultManager.nameOf(folder)) { target, paths ->
+                    dropInto(target?.let { vaultFolderOf(it.path) } ?: folder, paths)
+                }
+                when {
+                    entries.isEmpty() && folder.isEmpty() -> EmptyState(
+                        Icons.Outlined.Lock,
+                        "Your hidden folder is empty",
+                        "Tap Add files, or choose Move to hidden folder on any file or folder. Everything is encrypted and removed from its old place.",
+                    )
+                    entries.isEmpty() -> Box(Modifier.fillMaxSize().dropHere(paneDrop)) {
+                        EmptyState(
+                            Icons.Outlined.FolderOpen,
+                            "This folder is empty",
+                            if (pending.isNotEmpty()) "Tap Hide here to put them in this folder." else "Tap Add files to hide files right here, or move hidden files into it.",
+                        )
                     }
-                    Spacer(Modifier.height(6.dp))
-                    Text(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
-                    Text(formatSize(item.size), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    else -> key(folder) {
+                        FileListPane(
+                            entries = entries,
+                            level = view.level,
+                            selection = selection,
+                            favorites = emptySet(),
+                            onOpen = ::open,
+                            onSelectionChange = { selection = it },
+                            onMore = { sheetFor = it },
+                            onLevelChange = { setView(view.copy(level = it)) },
+                            drop = paneDrop,
+                        )
+                    }
                 }
             }
         }
+
+        sheetFor?.let { entry ->
+            VaultEntrySheet(
+                entry = entry,
+                onDismiss = { sheetFor = null },
+                onMoveOut = { moveOut(listOf(entry.path)) },
+                onMove = { moving = listOf(entry.path) },
+                onRename = { renaming = entry },
+                onDelete = { deleting = listOf(entry.path) },
+            )
+        }
     }
 
-    if (confirmDelete) {
+    renaming?.let { entry ->
+        val path = vaultFolderOf(entry.path)
+        val item = itemOf(entry.path)
+        NameDialog(
+            title = "Rename",
+            initial = entry.name,
+            selectBaseName = !entry.isDirectory,
+            confirm = "Rename",
+            exists = { name ->
+                if (path != null) VaultManager.join(VaultManager.parentOf(path), name) in folders
+                else items.any { it.folder == item?.folder && it.name == name && it.id != item.id }
+            },
+            onDismiss = { renaming = null },
+            onConfirm = {
+                actions.renameInVault(item, path, it)
+                selection = emptySet()
+            },
+        )
+    }
+
+    if (newFolder) {
+        NameDialog(
+            title = "New folder",
+            initial = "",
+            confirm = "Create",
+            exists = { VaultManager.join(folder, it) in folders },
+            onDismiss = { newFolder = false },
+            onConfirm = { actions.createVaultFolder(folder, it) },
+        )
+    }
+
+    moving?.let { paths ->
+        MoveInVaultDialog(
+            folders = folders,
+            current = folder,
+            movingFolders = paths.mapNotNull(::vaultFolderOf),
+            onDismiss = { moving = null },
+            onMove = { destination ->
+                actions.moveInVault(paths.mapNotNull(::itemOf), paths.mapNotNull(::vaultFolderOf), destination)
+                selection = emptySet()
+            },
+        )
+    }
+
+    deleting?.let { paths ->
+        val withFolders = paths.any { it.startsWith(DIR) }
         AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete ${itemCount(selected.size)} for good?") },
-            text = { Text("Hidden files don't go to Trash. They will be destroyed and can't be brought back.") },
+            onDismissRequest = { deleting = null },
+            title = { Text("Delete ${itemCount(paths.size)} for good?") },
+            text = {
+                Text(
+                    "Hidden files don't go to Trash. They will be destroyed and can't be brought back." +
+                        if (withFolders) " Everything inside the folders is deleted too." else "",
+                )
+            },
             confirmButton = {
                 Button(onClick = {
-                    confirmDelete = false
-                    graph.actions.deleteFromVault(selected)
+                    deleting = null
+                    actions.deleteFromVault(paths.mapNotNull(::itemOf), paths.mapNotNull(::vaultFolderOf))
                     selection = emptySet()
                 }) { Text("Delete") }
             },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
         )
     }
 
@@ -778,28 +1054,103 @@ private fun VaultContent(nav: NavController, offerFingerprint: Boolean, onOfferD
     if (offerFingerprint) FingerprintOfferDialog(onEnabled = { fingerprintOn = true }, onDone = onOfferDone)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun VaultThumb(item: VaultItem, modifier: Modifier) {
-    val graph = LocalGraph.current
-    val bitmap by produceState<ImageBitmap?>(null, item.id) {
-        if (item.kind == FileKind.IMAGE) {
-            value = withContext(Dispatchers.IO) {
-                try {
-                    graph.vault.readBytes(item, 25_000_000L)?.let { decodeImage(it, 256) }
-                } catch (_: Exception) {
-                    null
+private fun VaultEntrySheet(
+    entry: FileEntry,
+    onDismiss: () -> Unit,
+    onMoveOut: () -> Unit,
+    onMove: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
+            ListItem(
+                leadingContent = { FileThumb(entry, 44.dp) },
+                headlineContent = { Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                supportingContent = { Text(entry.subtitle()) },
+                colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+            )
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            @Composable
+            fun action(text: String, icon: ImageVector, run: () -> Unit) {
+                ListItem(
+                    leadingContent = { Icon(icon, null) },
+                    headlineContent = { Text(text) },
+                    colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    modifier = Modifier.clickableRow {
+                        scope.launch { sheetState.hide() }.invokeOnCompletion {
+                            onDismiss()
+                            run()
+                        }
+                    },
+                )
+            }
+            action("Move out of hidden folder", Icons.Outlined.LockOpen, onMoveOut)
+            @Suppress("DEPRECATION")
+            action("Move to folder…", Icons.Outlined.DriveFileMove, onMove)
+            action("Rename", Icons.Outlined.Edit, onRename)
+            action("Delete for good", Icons.Outlined.DeleteForever, onDelete)
+        }
+    }
+}
+
+/** Pick a folder inside the hidden folder. Folders can't go into themselves. */
+@Composable
+private fun MoveInVaultDialog(
+    folders: Set<String>,
+    current: String,
+    movingFolders: List<String>,
+    onDismiss: () -> Unit,
+    onMove: (String) -> Unit,
+) {
+    val options = remember(folders) { listOf("") + treeOrder(folders.filter { it.isNotEmpty() }) }
+    var target by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Move to folder") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                items(options) { option ->
+                    val blocked = movingFolders.any { VaultManager.isInside(option, it) }
+                    val depth = if (option.isEmpty()) 0 else option.count { it == '/' } + 1
+                    val chosen = option == target
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (chosen) MaterialTheme.colorScheme.secondaryContainer else androidx.compose.ui.graphics.Color.Transparent)
+                            .clickable(enabled = !blocked) { target = option }
+                            .padding(start = 8.dp + 20.dp * depth, end = 8.dp, top = 10.dp, bottom = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        val tint = if (blocked) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.primary
+                        Icon(if (option.isEmpty()) Icons.Outlined.Lock else Icons.Outlined.Folder, null, tint = tint)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            if (option.isEmpty()) "Hidden folder" else VaultManager.nameOf(option),
+                            color = if (blocked) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
-        }
-    }
-    val bmp = bitmap
-    if (bmp != null) {
-        Image(bmp, contentDescription = null, contentScale = ContentScale.Crop, modifier = modifier.clip(RoundedCornerShape(16.dp)))
-    } else {
-        Box(modifier.clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainer), contentAlignment = Alignment.Center) {
-            KindIcon(item.kind, 56.dp)
-        }
-    }
+        },
+        confirmButton = {
+            Button(
+                enabled = target != null && target != current,
+                onClick = {
+                    onDismiss()
+                    onMove(target!!)
+                },
+            ) { Text("Move here") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -868,7 +1219,13 @@ fun VaultImageScreen(nav: NavController, id: String) {
     val graph = LocalGraph.current
     val unlocked by graph.vault.unlocked.collectAsStateWithLifecycle()
     val items by graph.vault.items.collectAsStateWithLifecycle()
-    val pictures = items.filter { it.kind == FileKind.IMAGE }.sortedByDescending { it.addedAt }
+    // Swipe through the pictures of the same folder, in the order that folder is sorted.
+    val folder = remember { items.firstOrNull { it.id == id }?.folder ?: "" }
+    val sort = remember { graph.views.get(graph.vault.viewKey(folder), VAULT_DEFAULTS).sort }
+    val pictures = remember(items) {
+        val byId = items.associateBy { it.id }
+        vaultEntries(items.filter { it.kind == FileKind.IMAGE }, emptySet(), folder).sortedBy(sort).mapNotNull { byId[it.path.removePrefix(ITEM)] }
+    }
     val start = remember { pictures.indexOfFirst { it.id == id }.coerceAtLeast(0) }
     SecureWindow()
     LaunchedEffect(unlocked, pictures.isEmpty()) { if (!unlocked || pictures.isEmpty()) nav.popBackStack() }
@@ -880,7 +1237,7 @@ fun VaultImageScreen(nav: NavController, id: String) {
         onBack = { nav.popBackStack() },
         actions = { page ->
             IconButton(onClick = { graph.actions.restoreFromVault(listOf(pictures[page])) }) {
-                Icon(Icons.Outlined.RestoreFromTrash, "Move out of hidden folder", tint = androidx.compose.ui.graphics.Color.White)
+                Icon(Icons.Outlined.LockOpen, "Move out of hidden folder", tint = androidx.compose.ui.graphics.Color.White)
             }
         },
     ) { page, modifier ->
@@ -901,4 +1258,5 @@ fun VaultImageScreen(nav: NavController, id: String) {
             Box(modifier, contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         }
     }
+    PrivacyCurtain()
 }

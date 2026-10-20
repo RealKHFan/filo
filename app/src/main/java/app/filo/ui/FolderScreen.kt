@@ -128,16 +128,39 @@ fun FolderScreen(
         pickForVault = pickForVault,
         emptyTitle = "This folder is empty",
         emptyBody = if (settings.showHidden) "There are no files here." else "There are no files here. Hidden files are not shown.",
-        topContent = { Breadcrumbs(volume.label, volume.root, dir, onOpen = vm::open) },
+        topContent = {
+            Breadcrumbs(
+                volume.label,
+                volume.root,
+                dir,
+                onOpen = vm::open,
+                drop = if (pickForVault) null else CrumbDrop(STORAGE_SPACE, { it.absolutePath }) { target, paths -> graph.actions.moveInto(paths, target) },
+            )
+        },
         onMenu = if (isTab) home::openMenu else null,
         active = active,
         highlight = highlight?.takeIf { File(it).parentFile == dir },
     )
 }
 
+/** Where files dragged onto the path bar go. [keyOf] turns a part of the path into the same key as DragSession.origin. */
+class CrumbDrop(
+    val space: String,
+    val keyOf: (File) -> String,
+    val onDropInto: (dir: File, paths: Set<String>) -> Unit,
+)
+
 /** "Internal storage › Download › Music": tap any part to jump there. */
 @Composable
-fun Breadcrumbs(rootLabel: String, root: File, dir: File, onOpen: (File) -> Unit) {
+fun Breadcrumbs(
+    rootLabel: String,
+    root: File,
+    dir: File,
+    onOpen: (File) -> Unit,
+    /** Files dragged onto a part of the path move into that folder; holding there opens it. */
+    drop: CrumbDrop? = null,
+) {
+    val fileDrag = LocalFileDrag.current
     val parts = buildList {
         add(rootLabel to root)
         val relative = dir.absolutePath.removePrefix(root.absolutePath).trim('/')
@@ -160,13 +183,36 @@ fun Breadcrumbs(rootLabel: String, root: File, dir: File, onOpen: (File) -> Unit
     ) {
         itemsIndexed(parts) { index, (label, file) ->
             val last = index == parts.lastIndex
+            val key = "crumb:" + file.absolutePath
+            val hovered = fileDrag.hovered?.key == key
+            val target = if (drop == null) {
+                Modifier
+            } else {
+                Modifier.dropZone(drop.space) { _, session ->
+                    // The folder they're already in: holding there does nothing, letting go cancels.
+                    if (session.origin == drop.keyOf(file)) {
+                        null
+                    } else {
+                        DropSpot(key, label, onDrop = { paths -> drop.onDropInto(file, paths) }, onOpen = { onOpen(file) })
+                    }
+                }
+            }
             AssistChip(
                 onClick = { onOpen(file) },
                 label = { Text(label, maxLines = 1) },
                 border = null,
+                modifier = target,
                 colors = AssistChipDefaults.assistChipColors(
-                    containerColor = if (last) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface,
-                    labelColor = if (last) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                    containerColor = when {
+                        hovered -> MaterialTheme.colorScheme.tertiaryContainer
+                        last -> MaterialTheme.colorScheme.secondaryContainer
+                        else -> MaterialTheme.colorScheme.surface
+                    },
+                    labelColor = when {
+                        hovered -> MaterialTheme.colorScheme.onTertiaryContainer
+                        last -> MaterialTheme.colorScheme.onSecondaryContainer
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 ),
             )
             if (!last) {

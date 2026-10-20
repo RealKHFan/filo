@@ -160,8 +160,9 @@ fun itemCount(n: Int) = when (n) {
 }
 
 fun FileEntry.subtitle(): String =
-    if (isDirectory) "${itemCount(childCount)} · ${formatDate(lastModified)}"
-    else "${formatSize(size)} · ${formatDate(lastModified)}"
+    listOf(if (isDirectory) itemCount(childCount) else formatSize(size), formatDate(lastModified))
+        .filter { it.isNotEmpty() }
+        .joinToString(" · ")
 
 @Composable
 fun SectionHeader(text: String, modifier: Modifier = Modifier) {
@@ -260,9 +261,22 @@ fun KindIcon(kind: FileKind, size: Dp, modifier: Modifier = Modifier, corner: Dp
     }
 }
 
+/** Lets a screen draw its own previews: the hidden folder decrypts pictures in memory. */
+interface ThumbProvider {
+    @Composable
+    fun Thumb(entry: FileEntry, size: Dp, modifier: Modifier, corner: Dp)
+}
+
+val LocalThumbs = staticCompositionLocalOf<ThumbProvider?> { null }
+
 /** Real preview for pictures, videos and app installers; a type icon for everything else. */
 @Composable
 fun FileThumb(entry: FileEntry, size: Dp, modifier: Modifier = Modifier, corner: Dp = size * 0.28f) {
+    val provider = LocalThumbs.current
+    if (provider != null && !entry.isDirectory) {
+        provider.Thumb(entry, size, modifier, corner)
+        return
+    }
     when (entry.kind) {
         FileKind.IMAGE, FileKind.VIDEO -> {
             val px = with(LocalDensity.current) { size.roundToPx() }.coerceAtLeast(64) * 2
