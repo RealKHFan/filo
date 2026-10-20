@@ -14,6 +14,7 @@ import app.filo.data.SettingsStore
 import app.filo.data.StorageInfo
 import app.filo.data.StoragePermission
 import app.filo.data.TrashManager
+import app.filo.data.ViewPrefsStore
 import app.filo.data.without
 import app.filo.vault.AndroidBiometricKey
 import app.filo.vault.AndroidDeviceKey
@@ -46,6 +47,11 @@ class Graph(
 ) {
     private val prefs = context.getSharedPreferences("filo", Context.MODE_PRIVATE)
     val settings = SettingsStore(prefs)
+    /** View size and sort, remembered per folder and list. */
+    val views = ViewPrefsStore(context.getSharedPreferences("filo_views", Context.MODE_PRIVATE))
+
+    /** The pictures the image viewer can swipe through (set by the screen that opened it). */
+    @Volatile var viewerPaths: List<String> = emptyList()
     val favorites = FavoritesStore(prefs)
     val trash = TrashManager(File(storageRoot, TrashManager.DIR_NAME))
     val vault = VaultManager(File(context.filesDir, "vault"), File(context.cacheDir, "vault_open"), deviceKey, pinKdf)

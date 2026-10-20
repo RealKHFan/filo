@@ -24,6 +24,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Android
 import androidx.compose.material.icons.outlined.CheckCircle
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.FolderOff
@@ -264,12 +269,25 @@ fun ReviewListScreen(nav: NavController, kind: ReviewKind) {
     val entries = result?.entries(kind).orEmpty()
     val selectedSize = entries.filter { it.path in selection }.sumOf { it.size }
 
+    var sheetFor by remember { mutableStateOf<FileEntry?>(null) }
+    var info by remember { mutableStateOf<FileEntry?>(null) }
+    val drag = remember { DragSelect() }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+
     fun open(entry: FileEntry) {
         when {
             entry.isDirectory -> nav.navigate(Routes.folder(entry.path))
-            entry.kind == FileKind.IMAGE -> nav.navigate(Routes.image(entry.path))
+            entry.kind == FileKind.IMAGE -> {
+                graph.viewerPaths = entries.filter { it.kind == FileKind.IMAGE }.map { it.path }
+                nav.navigate(Routes.image(entry.path))
+            }
             !Opener.open(context, entry.file) -> graph.actions.notify("No app on your phone can open this file")
         }
+    }
+
+    fun showInFolder(entry: FileEntry) {
+        val parent = entry.file.parentFile ?: return
+        nav.navigate(Routes.folder(parent.absolutePath, highlight = entry.path))
     }
 
     fun toggle(entry: FileEntry) {
@@ -324,10 +342,21 @@ fun ReviewListScreen(nav: NavController, kind: ReviewKind) {
             }
             return@Scaffold
         }
-        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 24.dp)) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize().padding(padding).dragToSelect(
+                state = drag,
+                keys = entries.map { it.path },
+                selection = selection,
+                onSelectionChange = { selection = it },
+                itemAt = { p -> listState.layoutInfo.visibleItemsInfo.firstOrNull { p.y >= it.offset && p.y < it.offset + it.size }?.key as? String },
+                scrollBy = { listState.scrollBy(it) },
+            ),
+            contentPadding = PaddingValues(bottom = 24.dp),
+        ) {
             item {
                 Text(
-                    "Tap to select. Touch and hold to open. Deleted files stay in Trash for 30 days.",
+                    "Tap to select, or touch and hold and drag over several. Tap a thumbnail or ⋮ to look at a file first. Deleted files stay in Trash for 30 days.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
@@ -342,14 +371,106 @@ fun ReviewListScreen(nav: NavController, kind: ReviewKind) {
                         )
                     }
                     items(group.files, key = { it.path }) { entry ->
-                        FileRow(entry, entry.path in selection, true, entry.path in favorites, { toggle(entry) }, { open(entry) }, null)
+                        FileRow(
+                            entry,
+                            selected = entry.path in selection,
+                            selectionMode = false,
+                            favorite = entry.path in favorites,
+                            onClick = { if (!drag.consumeClick()) toggle(entry) },
+                            onLongClick = { toggle(entry) },
+                            onMore = { sheetFor = entry },
+                            onThumbClick = { open(entry) },
+                            longPressFromParent = true,
+                            selectedMark = true,
+                        )
                     }
                 }
             } else {
                 items(entries, key = { it.path }) { entry ->
-                    FileRow(entry, entry.path in selection, true, entry.path in favorites, { toggle(entry) }, { open(entry) }, null)
+                    FileRow(
+                            entry,
+                            selected = entry.path in selection,
+                            selectionMode = false,
+                            favorite = entry.path in favorites,
+                            onClick = { if (!drag.consumeClick()) toggle(entry) },
+                            onLongClick = { toggle(entry) },
+                            onMore = { sheetFor = entry },
+                            onThumbClick = { open(entry) },
+                            longPressFromParent = true,
+                            selectedMark = true,
+                        )
                 }
             }
+        }
+    }
+
+    sheetFor?.let { entry ->
+        ReviewItemSheet(
+            entry = entry,
+            selected = entry.path in selection,
+            onDismiss = { sheetFor = null },
+            onOpen = { open(entry) },
+            onShowInFolder = { showInFolder(entry) },
+            onInfo = { info = entry },
+            onToggle = { toggle(entry) },
+        )
+    }
+    info?.let { FileInfoDialog(it) { info = null } }
+}
+
+/** "Internal storage › Download › Old" instead of a raw path. */
+@Composable
+private fun placeName(dir: java.io.File?): String {
+    val root = LocalGraph.current.storageRoot
+    if (dir == null) return ""
+    val relative = dir.absolutePath.removePrefix(root.absolutePath).trim('/')
+    return if (dir.absolutePath.startsWith(root.absolutePath)) {
+        (listOf("Internal storage") + relative.split('/').filter { it.isNotEmpty() }).joinToString(" › ")
+    } else {
+        dir.absolutePath
+    }
+}
+
+/** Look at a file before deciding: open it, see where it lives, or check its details. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReviewItemSheet(
+    entry: FileEntry,
+    selected: Boolean,
+    onDismiss: () -> Unit,
+    onOpen: () -> Unit,
+    onShowInFolder: () -> Unit,
+    onInfo: () -> Unit,
+    onToggle: () -> Unit,
+) {
+    val state = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    fun after(action: () -> Unit) {
+        scope.launch { state.hide() }.invokeOnCompletion {
+            onDismiss()
+            action()
+        }
+    }
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
+        Column(Modifier.padding(bottom = 16.dp)) {
+            androidx.compose.material3.ListItem(
+                leadingContent = { FileThumb(entry, 48.dp) },
+                headlineContent = { Text(entry.name, maxLines = 2) },
+                supportingContent = { Text("${entry.subtitle()}\n${placeName(entry.file.parentFile)}") },
+            )
+            androidx.compose.material3.HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            @Composable
+            fun action(text: String, icon: ImageVector, run: () -> Unit) {
+                androidx.compose.material3.ListItem(
+                    leadingContent = { Icon(icon, null) },
+                    headlineContent = { Text(text) },
+                    modifier = Modifier.clickableRow { after(run) },
+                )
+            }
+            action("Open", Icons.AutoMirrored.Outlined.OpenInNew, onOpen)
+            action("Show in folder", Icons.Outlined.FolderOpen, onShowInFolder)
+            action("File info", Icons.Outlined.Info, onInfo)
+            action(if (selected) "Don't select" else "Select", Icons.Outlined.CheckCircle, onToggle)
         }
     }
 }

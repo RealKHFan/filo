@@ -74,7 +74,6 @@ import app.filo.data.FileEntry
 import app.filo.data.FileKind
 import app.filo.data.FileOps
 import app.filo.data.ReviewKind
-import app.filo.data.ViewMode
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
@@ -120,7 +119,7 @@ object Routes {
     const val LICENSE = "license/{which}"
 
     fun license(which: String) = "license/$which"
-    const val FOLDER = "folder?path={path}&pick={pick}"
+    const val FOLDER = "folder?path={path}&pick={pick}&highlight={highlight}"
     const val CATEGORY = "category/{category}"
     const val REVIEW_LIST = "review/{kind}"
     const val SEARCH = "search"
@@ -130,7 +129,8 @@ object Routes {
     const val IMAGE = "image?path={path}"
     const val VAULT_IMAGE = "vault_image/{id}"
 
-    fun folder(path: String, pickForVault: Boolean = false) = "folder?path=${Uri.encode(path)}&pick=$pickForVault"
+    fun folder(path: String, pickForVault: Boolean = false, highlight: String? = null) =
+        "folder?path=${Uri.encode(path)}&pick=$pickForVault" + (highlight?.let { "&highlight=${Uri.encode(it)}" } ?: "")
     fun category(category: Category) = "category/${category.name}"
     fun reviewList(kind: ReviewKind) = "review/${kind.name}"
     fun image(path: String) = "image?path=${Uri.encode(path)}"
@@ -242,12 +242,12 @@ fun Loading(modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun KindIcon(kind: FileKind, size: Dp, modifier: Modifier = Modifier) {
+fun KindIcon(kind: FileKind, size: Dp, modifier: Modifier = Modifier, corner: Dp = size * 0.28f) {
     val folder = kind == FileKind.FOLDER
     Box(
         modifier
             .size(size)
-            .clip(RoundedCornerShape(size * 0.28f))
+            .clip(RoundedCornerShape(corner))
             .background(if (folder) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer),
         contentAlignment = Alignment.Center,
     ) {
@@ -262,12 +262,12 @@ fun KindIcon(kind: FileKind, size: Dp, modifier: Modifier = Modifier) {
 
 /** Real preview for pictures, videos and app installers; a type icon for everything else. */
 @Composable
-fun FileThumb(entry: FileEntry, size: Dp, modifier: Modifier = Modifier) {
+fun FileThumb(entry: FileEntry, size: Dp, modifier: Modifier = Modifier, corner: Dp = size * 0.28f) {
     when (entry.kind) {
         FileKind.IMAGE, FileKind.VIDEO -> {
             val px = with(LocalDensity.current) { size.roundToPx() }.coerceAtLeast(64) * 2
-            Box(modifier.size(size).clip(RoundedCornerShape(size * 0.28f))) {
-                KindIcon(entry.kind, size)
+            Box(modifier.size(size).clip(RoundedCornerShape(corner))) {
+                KindIcon(entry.kind, size, Modifier.matchParentSize(), corner = corner)
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current).data(entry.file).size(px).build(),
                     contentDescription = null,
@@ -312,166 +312,5 @@ private fun ApkThumb(entry: FileEntry, size: Dp, modifier: Modifier) {
         androidx.compose.foundation.Image(bitmap, contentDescription = null, modifier = modifier.size(size))
     } else {
         KindIcon(FileKind.APK, size, modifier)
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun FileRow(
-    entry: FileEntry,
-    selected: Boolean,
-    selectionMode: Boolean,
-    favorite: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    onMore: (() -> Unit)?,
-    subtitle: String? = null,
-) {
-    val background = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 2.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(background)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "Select")
-            .padding(start = 8.dp, top = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        FileThumb(entry, 44.dp)
-        Spacer(Modifier.width(16.dp))
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    entry.name,
-                    style = MaterialTheme.typography.bodyLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.MiddleEllipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                if (favorite) {
-                    Spacer(Modifier.width(4.dp))
-                    Icon(Icons.Outlined.Star, "Favorite", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
-                }
-            }
-            Text(
-                subtitle ?: entry.subtitle(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-        }
-        when {
-            selectionMode -> Checkbox(checked = selected, onCheckedChange = { onClick() })
-            onMore != null -> IconButton(onClick = onMore) {
-                Icon(Icons.Outlined.MoreVert, contentDescription = "More options for ${entry.name}")
-            }
-            else -> Spacer(Modifier.width(16.dp))
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun FileGridCell(
-    entry: FileEntry,
-    selected: Boolean,
-    favorite: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-) {
-    Column(
-        Modifier
-            .padding(4.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "Select")
-            .padding(6.dp)
-            .semantics { contentDescription = "${entry.name}, ${entry.subtitle()}" },
-    ) {
-        Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
-            if (entry.kind == FileKind.IMAGE || entry.kind == FileKind.VIDEO) {
-                FileThumb(entry, 160.dp, Modifier.fillMaxSize())
-            } else {
-                Box(
-                    Modifier.fillMaxSize().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainer),
-                    contentAlignment = Alignment.Center,
-                ) { FileThumb(entry, 56.dp) }
-            }
-            if (selected) {
-                Icon(
-                    Icons.Outlined.CheckCircle,
-                    contentDescription = "Selected",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).background(MaterialTheme.colorScheme.surface, CircleShape),
-                )
-            }
-            if (favorite) {
-                Icon(
-                    Icons.Outlined.Star,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.align(Alignment.TopStart).padding(6.dp).size(18.dp),
-                )
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(entry.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
-        Text(
-            if (entry.isDirectory) itemCount(entry.childCount) else formatSize(entry.size),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-        )
-    }
-}
-
-/** A list or grid of files. [header] scrolls with the content. */
-@Composable
-fun FileListPane(
-    entries: List<FileEntry>,
-    viewMode: ViewMode,
-    selection: Set<String>,
-    favorites: Set<String>,
-    onClick: (FileEntry) -> Unit,
-    onLongClick: (FileEntry) -> Unit,
-    onMore: ((FileEntry) -> Unit)?,
-    modifier: Modifier = Modifier,
-    contentPadding: PaddingValues = PaddingValues(bottom = 96.dp),
-    header: (LazyListScope.() -> Unit)? = null,
-    gridHeader: (@Composable () -> Unit)? = null,
-) {
-    if (viewMode == ViewMode.GRID) {
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(112.dp),
-            modifier = modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = contentPadding.calculateBottomPadding()),
-        ) {
-            if (gridHeader != null) item(span = { GridItemSpan(maxLineSpan) }) { gridHeader() }
-            items(entries, key = { it.path }) { entry ->
-                FileGridCell(
-                    entry,
-                    selected = entry.path in selection,
-                    favorite = entry.path in favorites,
-                    onClick = { onClick(entry) },
-                    onLongClick = { onLongClick(entry) },
-                )
-            }
-        }
-    } else {
-        LazyColumn(modifier = modifier.fillMaxSize(), contentPadding = contentPadding) {
-            header?.invoke(this)
-            items(entries, key = { it.path }) { entry ->
-                FileRow(
-                    entry,
-                    selected = entry.path in selection,
-                    selectionMode = selection.isNotEmpty(),
-                    favorite = entry.path in favorites,
-                    onClick = { onClick(entry) },
-                    onLongClick = { onLongClick(entry) },
-                    onMore = onMore?.let { { it(entry) } },
-                )
-            }
-        }
     }
 }

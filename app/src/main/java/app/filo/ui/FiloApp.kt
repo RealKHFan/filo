@@ -184,10 +184,21 @@ private fun FiloNav(pendingRoute: StateFlow<String?>, onRouteHandled: () -> Unit
                         type = NavType.BoolType
                         defaultValue = false
                     },
+                    navArgument("highlight") {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    },
                 ),
             ) {
                 val path = it.arguments?.getString("path") ?: graph.storageRoot.absolutePath
-                FolderScreen(nav, File(path), isTab = false, pickForVault = it.arguments?.getBoolean("pick") == true)
+                FolderScreen(
+                    nav,
+                    File(path),
+                    isTab = false,
+                    pickForVault = it.arguments?.getBoolean("pick") == true,
+                    highlight = it.arguments?.getString("highlight"),
+                )
             }
             composable(Routes.CATEGORY, arguments = listOf(navArgument("category") { type = NavType.StringType })) {
                 val category = Category.valueOf(it.arguments?.getString("category") ?: Category.IMAGES.name)

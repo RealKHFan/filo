@@ -16,7 +16,9 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -120,13 +122,47 @@ private fun Context.findActivity(): Activity? {
     return null
 }
 
+/**
+ * Counts how many hidden-folder screens are showing. Screens overlap while moving between them
+ * (the grid and a photo), so the protection stays on until the *last* one closes.
+ */
+internal object SecureScreens {
+    private val counts = java.util.WeakHashMap<Activity, Int>()
+
+    fun enter(activity: Activity) {
+        val n = (counts[activity] ?: 0) + 1
+        counts[activity] = n
+        if (n == 1) apply(activity, secure = true)
+    }
+
+    fun leave(activity: Activity) {
+        val n = ((counts[activity] ?: 1) - 1).coerceAtLeast(0)
+        counts[activity] = n
+        if (n == 0) apply(activity, secure = false)
+    }
+
+    fun isSecure(activity: Activity) = (counts[activity] ?: 0) > 0
+
+    private fun apply(activity: Activity, secure: Boolean) {
+        if (secure) {
+            activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+            activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        // Second, independent block: Android 13+ shows a plain card in recent apps instead of a screenshot.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            activity.setRecentsScreenshotEnabled(!secure)
+        }
+    }
+}
+
 /** No screenshots, screen recording or recent-apps preview while the hidden folder is visible. */
 @Composable
 fun SecureWindow() {
     val activity = LocalContext.current.findActivity()
     DisposableEffect(activity) {
-        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        onDispose { activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+        activity?.let(SecureScreens::enter)
+        onDispose { activity?.let(SecureScreens::leave) }
     }
 }
 
@@ -572,6 +608,8 @@ private fun VaultContent(nav: NavController, offerFingerprint: Boolean, onOfferD
     var changePin by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var fingerprintOn by remember { mutableStateOf(graph.vault.biometricEnabled) }
+    val drag = remember { DragSelect() }
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
 
     LaunchedEffect(pending) {
         if (pending.isNotEmpty()) {
@@ -666,29 +704,39 @@ private fun VaultContent(nav: NavController, offerFingerprint: Boolean, onOfferD
             }
             return@Scaffold
         }
+        val sortedItems = items.sortedByDescending { it.addedAt }
         LazyVerticalGrid(
             columns = GridCells.Adaptive(112.dp),
-            modifier = Modifier.fillMaxSize().padding(padding),
+            state = gridState,
+            modifier = Modifier.fillMaxSize().padding(padding).dragToSelect(
+                state = drag,
+                keys = sortedItems.map { it.id },
+                selection = selection,
+                onSelectionChange = { selection = it },
+                itemAt = { p ->
+                    gridState.layoutInfo.visibleItemsInfo.firstOrNull {
+                        p.x >= it.offset.x && p.x < it.offset.x + it.size.width && p.y >= it.offset.y && p.y < it.offset.y + it.size.height
+                    }?.key as? String
+                },
+                scrollBy = { gridState.scrollBy(it) },
+            ),
             contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = 96.dp),
         ) {
-            items(items.sortedByDescending { it.addedAt }, key = { it.id }) { item ->
+            items(sortedItems, key = { it.id }) { item ->
                 val isSelected = item.id in selection
                 Column(
                     Modifier
                         .padding(4.dp)
                         .clip(RoundedCornerShape(16.dp))
                         .background(if (isSelected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface)
-                        .combinedClickable(
-                            onClick = {
-                                if (selection.isNotEmpty()) {
-                                    selection = if (isSelected) selection - item.id else selection + item.id
-                                } else {
-                                    open(item)
-                                }
-                            },
-                            onLongClick = { selection = if (isSelected) selection - item.id else selection + item.id },
-                            onLongClickLabel = "Select",
-                        )
+                        .clickable {
+                            when {
+                                drag.consumeClick() -> Unit
+                                selection.isNotEmpty() -> selection = if (isSelected) selection - item.id else selection + item.id
+                                else -> open(item)
+                            }
+                        }
+                        .semantics { onLongClick("Select") { selection = if (isSelected) selection - item.id else selection + item.id; true } }
                         .padding(6.dp),
                 ) {
                     Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
@@ -814,35 +862,38 @@ private fun ChangePinDialog(onDismiss: () -> Unit) {
     )
 }
 
-/** Picture from the hidden folder, decrypted in memory only. */
+/** Pictures from the hidden folder, decrypted in memory only. Swipe between them. */
 @Composable
 fun VaultImageScreen(nav: NavController, id: String) {
     val graph = LocalGraph.current
     val unlocked by graph.vault.unlocked.collectAsStateWithLifecycle()
     val items by graph.vault.items.collectAsStateWithLifecycle()
-    val item = items.firstOrNull { it.id == id }
+    val pictures = items.filter { it.kind == FileKind.IMAGE }.sortedByDescending { it.addedAt }
+    val start = remember { pictures.indexOfFirst { it.id == id }.coerceAtLeast(0) }
     SecureWindow()
-    LaunchedEffect(unlocked, item) { if (!unlocked || item == null) nav.popBackStack() }
-    if (item == null) return
-    val bitmap by produceState<ImageBitmap?>(null, id) {
-        value = withContext(Dispatchers.IO) {
-            try {
-                graph.vault.readBytes(item, 200_000_000L)?.let { decodeImage(it, 2048) }
-            } catch (_: Exception) {
-                null
+    LaunchedEffect(unlocked, pictures.isEmpty()) { if (!unlocked || pictures.isEmpty()) nav.popBackStack() }
+    if (pictures.isEmpty()) return
+    PhotoPager(
+        count = pictures.size,
+        initialPage = start.coerceAtMost(pictures.lastIndex),
+        title = { pictures[it].name },
+        onBack = { nav.popBackStack() },
+        actions = { page ->
+            IconButton(onClick = { graph.actions.restoreFromVault(listOf(pictures[page])) }) {
+                Icon(Icons.Outlined.RestoreFromTrash, "Move out of hidden folder", tint = androidx.compose.ui.graphics.Color.White)
+            }
+        },
+    ) { page, modifier ->
+        val item = pictures[page]
+        val bitmap by produceState<ImageBitmap?>(null, item.id) {
+            value = withContext(Dispatchers.IO) {
+                try {
+                    graph.vault.readBytes(item, 200_000_000L)?.let { decodeImage(it, 2048) }
+                } catch (_: Exception) {
+                    null
+                }
             }
         }
-    }
-    ZoomableViewer(
-        title = item.name,
-        onBack = { nav.popBackStack() },
-        actions = {
-            IconButton(onClick = {
-                graph.actions.restoreFromVault(listOf(item))
-                nav.popBackStack()
-            }) { Icon(Icons.Outlined.RestoreFromTrash, "Move out of hidden folder", tint = androidx.compose.ui.graphics.Color.White) }
-        },
-    ) { modifier ->
         val bmp = bitmap
         if (bmp != null) {
             Image(bmp, contentDescription = item.name, contentScale = ContentScale.Fit, modifier = modifier)

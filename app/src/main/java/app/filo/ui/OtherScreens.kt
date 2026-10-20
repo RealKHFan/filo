@@ -8,7 +8,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -63,6 +70,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -115,6 +123,8 @@ fun TrashScreen(active: Boolean = true) {
     var selection by remember { mutableStateOf(emptySet<String>()) }
     var sheetFor by remember { mutableStateOf<TrashItem?>(null) }
     var confirm by remember { mutableStateOf<List<TrashItem>?>(null) }
+    val trashDrag = remember { DragSelect() }
+    val trashList = androidx.compose.foundation.lazy.rememberLazyListState()
     val list = items.orEmpty()
     val selected = list.filter { it.id in selection }
     androidx.activity.compose.BackHandler(enabled = active && selection.isNotEmpty()) { selection = emptySet() }
@@ -157,7 +167,18 @@ fun TrashScreen(active: Boolean = true) {
             when {
                 items == null -> Loading()
                 list.isEmpty() -> EmptyState(Icons.Outlined.DeleteOutline, "Trash is empty", "Files you delete stay here for 30 days, so you can bring them back.")
-                else -> LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
+                else -> LazyColumn(
+                    state = trashList,
+                    contentPadding = PaddingValues(bottom = 24.dp),
+                    modifier = Modifier.dragToSelect(
+                        state = trashDrag,
+                        keys = list.map { it.id },
+                        selection = selection,
+                        onSelectionChange = { selection = it },
+                        itemAt = { p -> trashList.layoutInfo.visibleItemsInfo.firstOrNull { p.y >= it.offset && p.y < it.offset + it.size }?.key as? String },
+                        scrollBy = { trashList.scrollBy(it) },
+                    ),
+                ) {
                     item {
                         Surface(
                             shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
@@ -181,7 +202,14 @@ fun TrashScreen(active: Boolean = true) {
                             selected = item.id in selection,
                             selectionMode = selection.isNotEmpty(),
                             favorite = false,
-                            onClick = { if (selection.isNotEmpty()) toggle(item) else sheetFor = item },
+                            onClick = {
+                                when {
+                                    trashDrag.consumeClick() -> Unit
+                                    selection.isNotEmpty() -> toggle(item)
+                                    else -> sheetFor = item
+                                }
+                            },
+                            longPressFromParent = true,
                             onLongClick = { toggle(item) },
                             onMore = { sheetFor = item },
                             subtitle = "${formatSize(item.size)} · ${if (days == 1) "1 day" else "$days days"} left · from ${from(item)}",
@@ -501,62 +529,154 @@ fun LicenseScreen(nav: NavController, which: String) {
 
 // ---------------------------------------------------------------- Image viewer
 
-/** Full-screen picture with pinch to zoom. */
+/** The pictures to swipe through: the list the opening screen showed, or the file's folder. */
+private fun viewerList(graph: app.filo.Graph, file: File): List<String> {
+    val given = graph.viewerPaths
+    if (file.absolutePath in given) return given
+    val siblings = file.parentFile?.listFiles()?.filter { it.isFile && !it.name.startsWith(".") && FileKind.ofName(it.name) == FileKind.IMAGE }
+        ?.sortedWith(compareBy(app.filo.data.NaturalOrder) { it.name })
+        ?.map { it.absolutePath }
+    return siblings?.takeIf { file.absolutePath in it } ?: listOf(file.absolutePath)
+}
+
+/** Full-screen pictures: swipe left and right, pinch or double-tap to zoom. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ImageViewerScreen(nav: NavController, file: File) {
     val graph = LocalGraph.current
     val context = LocalContext.current
-    ZoomableViewer(
-        title = file.name,
+    val paths = remember { androidx.compose.runtime.mutableStateListOf<String>().apply { addAll(viewerList(graph, file)) } }
+    if (paths.isEmpty()) {
+        LaunchedEffect(Unit) { nav.popBackStack() }
+        return
+    }
+    PhotoPager(
+        count = paths.size,
+        initialPage = paths.indexOf(file.absolutePath).coerceAtLeast(0),
+        title = { File(paths[it]).name },
         onBack = { nav.popBackStack() },
-        actions = {
-            IconButton(onClick = { Opener.share(context, listOf(file)) }) { Icon(Icons.Outlined.Share, "Share", tint = Color.White) }
-            IconButton(onClick = { Opener.open(context, file, chooser = true) }) {
+        actions = { page ->
+            val current = File(paths[page])
+            IconButton(onClick = { Opener.share(context, listOf(current)) }) { Icon(Icons.Outlined.Share, "Share", tint = Color.White) }
+            IconButton(onClick = { Opener.open(context, current, chooser = true) }) {
                 Icon(Icons.AutoMirrored.Outlined.OpenInNew, "Open with", tint = Color.White)
             }
-            IconButton(onClick = { nav.navigate(Routes.folder(file.parent ?: graph.storageRoot.absolutePath)) }) {
+            IconButton(onClick = { nav.navigate(Routes.folder(current.parent ?: graph.storageRoot.absolutePath, highlight = current.absolutePath)) }) {
                 Icon(Icons.Outlined.FolderOpen, "Show in folder", tint = Color.White)
             }
             IconButton(onClick = {
-                graph.actions.moveToTrash(listOf(file.absolutePath))
-                nav.popBackStack()
+                graph.actions.moveToTrash(listOf(current.absolutePath))
+                paths.remove(current.absolutePath)
+                if (paths.isEmpty()) nav.popBackStack()
             }) { Icon(Icons.Outlined.Delete, "Move to trash", tint = Color.White) }
         },
-    ) { modifier ->
-        AsyncImage(model = file, contentDescription = file.name, contentScale = ContentScale.Fit, modifier = modifier)
+    ) { page, modifier ->
+        AsyncImage(model = File(paths[page]), contentDescription = File(paths[page]).name, contentScale = ContentScale.Fit, modifier = modifier)
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ZoomableViewer(
-    title: String,
+fun PhotoPager(
+    count: Int,
+    initialPage: Int,
+    title: (Int) -> String,
     onBack: () -> Unit,
-    actions: @Composable () -> Unit,
-    content: @Composable (Modifier) -> Unit,
+    actions: @Composable (page: Int) -> Unit,
+    page: @Composable (page: Int, modifier: Modifier) -> Unit,
 ) {
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
+    val pager = androidx.compose.foundation.pager.rememberPagerState(initialPage) { count }
+    var zoomed by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        content(
-            Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        scale = (scale * zoom).coerceIn(1f, 6f)
-                        offset = if (scale == 1f) Offset.Zero else offset + pan
-                    }
-                }
-                .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y),
-        )
+        androidx.compose.foundation.pager.HorizontalPager(
+            state = pager,
+            userScrollEnabled = !zoomed,
+            beyondViewportPageCount = 1,
+            modifier = Modifier.fillMaxSize().testTag("photo_pager"),
+        ) { index ->
+            ZoomableBox(resetKey = pager.settledPage, onZoomChange = { if (index == pager.currentPage) zoomed = it }) { modifier ->
+                page(index, modifier)
+            }
+        }
+        val current = pager.currentPage.coerceIn(0, (count - 1).coerceAtLeast(0))
         TopAppBar(
-            title = { Text(title, color = Color.White, maxLines = 1) },
+            title = {
+                Column {
+                    Text(if (count > 0) title(current) else "", color = Color.White, maxLines = 1, style = MaterialTheme.typography.titleMedium)
+                    if (count > 1) Text("${current + 1} of $count", color = Color.White.copy(alpha = 0.75f), style = MaterialTheme.typography.bodySmall)
+                }
+            },
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White) } },
-            actions = { actions() },
+            actions = { if (count > 0) actions(current) },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Black.copy(alpha = 0.45f)),
         )
     }
+}
+
+/**
+ * Pinch or double-tap to zoom. While not zoomed, one-finger swipes go to the pager (next picture);
+ * while zoomed, they move the picture around.
+ */
+@Composable
+private fun ZoomableBox(resetKey: Any, onZoomChange: (Boolean) -> Unit, content: @Composable (Modifier) -> Unit) {
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    LaunchedEffect(resetKey) {
+        scale = 1f
+        offset = Offset.Zero
+        onZoomChange(false)
+    }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures(onDoubleTap = { tap ->
+                    if (scale > 1f) {
+                        scale = 1f
+                        offset = Offset.Zero
+                    } else {
+                        scale = 2.5f
+                        val center = Offset(size.width / 2f, size.height / 2f)
+                        offset = clampOffset((center - tap) * 1.5f, scale, size.width.toFloat(), size.height.toFloat())
+                    }
+                    onZoomChange(scale > 1f)
+                })
+            }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        val fingers = event.changes.count { it.pressed }
+                        if (fingers >= 2 || scale > 1f) {
+                            scale = (scale * event.calculateZoom()).coerceIn(1f, 6f)
+                            offset = if (scale == 1f) {
+                                Offset.Zero
+                            } else {
+                                clampOffset(offset + event.calculatePan(), scale, size.width.toFloat(), size.height.toFloat())
+                            }
+                            onZoomChange(scale > 1f)
+                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            },
+    ) {
+        content(
+            Modifier.fillMaxSize().graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                translationX = offset.x
+                translationY = offset.y
+            },
+        )
+    }
+}
+
+private fun clampOffset(offset: Offset, scale: Float, width: Float, height: Float): Offset {
+    val maxX = width * (scale - 1) / 2
+    val maxY = height * (scale - 1) / 2
+    return Offset(offset.x.coerceIn(-maxX, maxX), offset.y.coerceIn(-maxY, maxY))
 }
 
 // ---------------------------------------------------------------- Permission

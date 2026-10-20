@@ -62,6 +62,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -87,7 +88,9 @@ import app.filo.data.MimeTypes
 import app.filo.data.Opener
 import app.filo.data.SortField
 import app.filo.data.SortOrder
-import app.filo.data.ViewMode
+import app.filo.data.ViewLevel
+import app.filo.data.ViewPrefs
+import app.filo.data.sortedBy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -105,8 +108,8 @@ fun FileCollectionScreen(
     nav: NavController,
     onBack: (() -> Unit)?,
     onOpenFolder: (File) -> Unit,
-    sort: SortOrder,
-    onSortChange: (SortOrder) -> Unit,
+    viewKey: String,
+    viewDefaults: ViewPrefs,
     modifier: Modifier = Modifier,
     currentDir: File? = null,
     selectionKey: Any = Unit,
@@ -117,6 +120,7 @@ fun FileCollectionScreen(
     showSearchAction: Boolean = true,
     onMenu: (() -> Unit)? = null,
     active: Boolean = true,
+    highlight: String? = null,
 ) {
     val graph = LocalGraph.current
     val home = LocalHome.current
@@ -125,6 +129,10 @@ fun FileCollectionScreen(
     val settings by graph.settings.state.collectAsStateWithLifecycle()
     val favorites by graph.favorites.paths.collectAsStateWithLifecycle()
     val clip by actions.clip.collectAsStateWithLifecycle()
+    val views by graph.views.all.collectAsStateWithLifecycle()
+    val view = views[viewKey] ?: viewDefaults
+    fun setView(next: ViewPrefs) = graph.views.set(viewKey, next)
+    val sorted = remember(entries, view.sort) { entries?.sortedBy(view.sort) }
 
     var selection by remember(selectionKey) { mutableStateOf(emptySet<String>()) }
     var sheetFor by remember { mutableStateOf<FileEntry?>(null) }
@@ -150,7 +158,10 @@ fun FileCollectionScreen(
     fun open(entry: FileEntry) {
         when {
             entry.isDirectory -> onOpenFolder(entry.file)
-            entry.kind == FileKind.IMAGE -> nav.navigate(Routes.image(entry.path))
+            entry.kind == FileKind.IMAGE -> {
+                graph.viewerPaths = sorted.orEmpty().filter { it.kind == FileKind.IMAGE }.map { it.path }
+                nav.navigate(Routes.image(entry.path))
+            }
             entry.extension == "zip" -> extracting = entry
             !Opener.open(context, entry.file) -> actions.notify("No app on your phone can open .${entry.extension} files")
         }
@@ -218,18 +229,16 @@ fun FileCollectionScreen(
                             IconButton(onClick = { nav.navigate(Routes.SEARCH) }) { Icon(Icons.Outlined.Search, "Search") }
                         }
                         IconButton(onClick = {
-                            graph.settings.update {
-                                it.copy(viewMode = if (it.viewMode == ViewMode.LIST) ViewMode.GRID else ViewMode.LIST)
-                            }
+                            setView(view.copy(level = if (view.level.isGrid) ViewLevel.LIST else ViewLevel.GRID_3))
                         }) {
-                            if (settings.viewMode == ViewMode.LIST) {
+                            if (!view.level.isGrid) {
                                 Icon(Icons.Outlined.GridView, "Show as grid")
                             } else {
                                 Icon(Icons.AutoMirrored.Outlined.List, "Show as list")
                             }
                         }
                         IconButton(onClick = { sortMenu = true }) { Icon(Icons.AutoMirrored.Outlined.Sort, "Sort") }
-                        SortMenu(sortMenu, sort, onDismiss = { sortMenu = false }, onChange = onSortChange)
+                        SortMenu(sortMenu, view.sort, onDismiss = { sortMenu = false }, onChange = { setView(view.copy(sort = it)) })
                         if (currentDir != null && !pickForVault) {
                             IconButton(onClick = { moreMenu = true }) { Icon(Icons.Outlined.MoreVert, "More options") }
                             DropdownMenu(moreMenu, onDismissRequest = { moreMenu = false }) {
@@ -286,24 +295,25 @@ fun FileCollectionScreen(
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             topContent?.invoke()
+            val list = sorted
             when {
-                entries == null -> Loading()
-                entries.isEmpty() -> EmptyState(Icons.Outlined.FolderOpen, emptyTitle, emptyBody)
-                else -> FileListPane(
-                    entries = entries,
-                    viewMode = settings.viewMode,
-                    selection = selection,
-                    favorites = favorites,
-                    onClick = {
-                        when {
-                            pickForVault -> if (it.isDirectory) open(it) else toggle(it)
-                            selection.isNotEmpty() -> toggle(it)
-                            else -> open(it)
-                        }
-                    },
-                    onLongClick = { toggle(it) },
-                    onMore = if (pickForVault) null else { entry -> sheetFor = entry },
-                )
+                list == null -> Loading()
+                list.isEmpty() -> EmptyState(Icons.Outlined.FolderOpen, emptyTitle, emptyBody)
+                else -> key(selectionKey) {
+                    FileListPane(
+                        entries = list,
+                        level = view.level,
+                        selection = selection,
+                        favorites = favorites,
+                        onOpen = ::open,
+                        onSelectionChange = { selection = it },
+                        onMore = if (pickForVault) null else { entry -> sheetFor = entry },
+                        onLevelChange = { setView(view.copy(level = it)) },
+                        selectable = { !(pickForVault && it.isDirectory) },
+                        tapSelects = pickForVault,
+                        highlight = highlight,
+                    )
+                }
             }
         }
     }
@@ -572,7 +582,7 @@ fun NameDialog(
 }
 
 @Composable
-private fun FileInfoDialog(entry: FileEntry, onDismiss: () -> Unit) {
+fun FileInfoDialog(entry: FileEntry, onDismiss: () -> Unit) {
     val size by produceState<Long?>(if (entry.isDirectory) null else entry.size, entry.path) {
         if (entry.isDirectory) value = withContext(Dispatchers.IO) { FileOps.totalSize(entry.file) }
     }

@@ -37,6 +37,8 @@ import androidx.navigation.NavController
 import app.filo.data.Category
 import app.filo.data.FileEntry
 import app.filo.data.FileSearch
+import app.filo.data.ViewPrefs
+import app.filo.data.ViewPrefsStore
 import app.filo.data.SortField
 import app.filo.data.SortOrder
 import app.filo.data.sortedBy
@@ -55,9 +57,8 @@ fun CategoryScreen(
     val graph = LocalGraph.current
     val settings by graph.settings.state.collectAsStateWithLifecycle()
     val changes by graph.actions.changes.collectAsStateWithLifecycle()
-    var sort by rememberSaveable(stateSaver = sortSaver) { mutableStateOf(SortOrder(SortField.DATE, ascending = false)) }
-    val entries by produceState<List<FileEntry>?>(null, changes, settings.showHidden, sort) {
-        value = graph.media.category(category, settings.showHidden).sortedBy(sort, foldersFirst = false)
+    val entries by produceState<List<FileEntry>?>(null, changes, settings.showHidden) {
+        value = graph.media.category(category, settings.showHidden)
     }
     FileCollectionScreen(
         title = title,
@@ -65,18 +66,14 @@ fun CategoryScreen(
         nav = nav,
         onBack = { nav.popBackStack() },
         onOpenFolder = { nav.navigate(Routes.folder(it.absolutePath)) },
-        sort = sort,
-        onSortChange = { sort = it },
+        viewKey = ViewPrefsStore.categoryKey(category),
+        viewDefaults = ViewPrefsStore.defaultsForCategory(category),
         emptyTitle = if (category == Category.APPS) "No installer files" else "No ${category.title.lowercase()} yet",
         emptyBody = if (category == Category.APPS) ".apk files saved on your phone show up here." else "${category.title} saved on your phone show up here.",
         topContent = topContent,
     )
 }
 
-private val sortSaver = androidx.compose.runtime.saveable.Saver<SortOrder, String>(
-    save = { "${it.field.name}:${it.ascending}" },
-    restore = { SortOrder(SortField.valueOf(it.substringBefore(':')), it.substringAfter(':').toBoolean()) },
-)
 
 @Composable
 fun FavoritesScreen(nav: NavController) {
@@ -84,9 +81,9 @@ fun FavoritesScreen(nav: NavController) {
     val favorites by graph.favorites.paths.collectAsStateWithLifecycle()
     val changes by graph.actions.changes.collectAsStateWithLifecycle()
     val settings by graph.settings.state.collectAsStateWithLifecycle()
-    val entries by produceState<List<FileEntry>?>(null, favorites, changes, settings.sort) {
+    val entries by produceState<List<FileEntry>?>(null, favorites, changes) {
         value = withContext(Dispatchers.IO) {
-            favorites.map(::File).filter { it.exists() }.map { FileEntry.from(it, countChildren = true) }.sortedBy(settings.sort)
+            favorites.map(::File).filter { it.exists() }.map { FileEntry.from(it, countChildren = true) }
         }
     }
     FileCollectionScreen(
@@ -95,8 +92,8 @@ fun FavoritesScreen(nav: NavController) {
         nav = nav,
         onBack = { nav.popBackStack() },
         onOpenFolder = { nav.navigate(Routes.folder(it.absolutePath)) },
-        sort = settings.sort,
-        onSortChange = { order -> graph.settings.update { it.copy(sort = order) } },
+        viewKey = ViewPrefsStore.FAVORITES,
+        viewDefaults = ViewPrefs(),
         emptyTitle = "No favorites yet",
         emptyBody = "Tap ⋮ next to a file or folder and choose Add to favorites.",
     )
@@ -162,8 +159,8 @@ fun SearchScreen(nav: NavController) {
                     nav = nav,
                     onBack = null,
                     onOpenFolder = { nav.navigate(Routes.folder(it.absolutePath)) },
-                    sort = settings.sort,
-                    onSortChange = { order -> graph.settings.update { it.copy(sort = order) } },
+                    viewKey = ViewPrefsStore.SEARCH,
+                    viewDefaults = ViewPrefs(),
                     showSearchAction = false,
                 )
             }

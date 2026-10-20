@@ -10,6 +10,7 @@ A private file manager for Android that looks and feels like Files by Google, wi
 <p>
   <img src="docs/screenshots/browse.png" width="200" alt="Browse tab">
   <img src="docs/screenshots/storage.png" width="200" alt="Storage tab">
+  <img src="docs/screenshots/camera-grid.png" width="200" alt="Photo folder as a grid">
   <img src="docs/screenshots/review.png" width="200" alt="Review tab">
   <img src="docs/screenshots/apps.png" width="200" alt="Apps">
   <img src="docs/screenshots/browse-dark.png" width="200" alt="Browse in dark theme">
@@ -21,7 +22,7 @@ A private file manager for Android that looks and feels like Files by Google, wi
 
 | Review | Browse | Storage | Trash |
 |---|---|---|---|
-| What takes space, as plain facts: large files, duplicates, old downloads, screenshots, installer files, empty folders. You choose what goes; nothing is deleted automatically. | Search, recent files, internal storage at the top with a usage bar, categories with their sizes (Downloads, Images, Videos, Audio, Documents, Apps) and collections (Favorites, Hidden folder). | Opens internal storage directly with a tappable path bar. | Deleted files, kept 30 days. Restore or delete one or many. |
+| What takes space, as plain facts: large files, duplicates, old downloads, screenshots, installer files, empty folders. Preview a file or jump to its folder before deciding; nothing is deleted automatically. | Search, recent files, internal storage at the top with a usage bar, categories with their sizes (Downloads, Images, Videos, Audio, Documents, Apps) and collections (Favorites, Hidden folder). | Opens internal storage directly with a tappable path bar. | Deleted files, kept 30 days. Restore or delete one or many. |
 
 The ☰ menu holds Favorites, Hidden folder, Settings and About, and has room for future features.
 
@@ -32,10 +33,12 @@ The ☰ menu holds Favorites, Hidden folder, Settings and About, and has room fo
 - Settings: show system apps, and optionally full sizes (app + data + cache). Full sizes need Android's Usage access, which you switch on yourself in the Android page Filo opens. Filo never asks with a pop-up.
 
 **Files**
-- List or grid view, sort by name, date, size or type
-- Long-press to select many; copy, move (with a Paste bar), rename, share, open with, file info
+- Two list sizes and four grid sizes: pinch out for bigger, pinch in for smaller
+- View size and sort order are remembered **per folder** (photo folders start as a grid)
+- Long-press and drag across files to select many at once; copy, move (with a Paste bar), rename, share, open with, file info
 - New folder, zip and unzip (protected against malicious archives)
-- Favorites, search across all storage, pinch-to-zoom image viewer
+- Favorites, search across all storage
+- Picture viewer: swipe left and right through a folder, pinch or double-tap to zoom
 - Undo right after moving something to Trash
 - Hidden files (names starting with a dot, like `.thumbnails`) stay hidden unless you switch them on in Settings
 - Long-press the app icon for shortcuts to Internal storage and Downloads
@@ -53,7 +56,7 @@ The ☰ menu holds Favorites, Hidden folder, Settings and About, and has room fo
 
 ## Install
 
-1. Download `Filo-1.2.0.apk` from the [Releases](../../releases) page on your phone.
+1. Download `Filo-1.3.0.apk` from the [Releases](../../releases) page on your phone.
 2. Open it. If asked, allow your browser or file app to install unknown apps.
 3. Open Filo and tap **Allow access**, then turn on **Allow access to manage all files**. (A full file manager needs this; Filo has no internet access.)
 
@@ -64,7 +67,7 @@ To tap `.apk` files inside Filo and install them, Android will ask once to let F
 Requirements: JDK 17+ and the Android SDK (platform 36).
 
 ```bash
-./gradlew testDebugUnitTest   # 59 tests: file operations, trash, zip, Review, search, encryption, PIN lockout, auto-lock, UI
+./gradlew testDebugUnitTest   # 66 tests: file operations, trash, zip, Review, search, encryption, PIN lockout, auto-lock, UI
 ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
 ```
 

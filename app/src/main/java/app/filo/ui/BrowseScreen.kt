@@ -102,6 +102,7 @@ fun BrowseScreen(nav: NavController) {
                     items(recent, key = { it.path }) { entry ->
                         RecentCard(entry) {
                             if (entry.kind == FileKind.IMAGE) {
+                                graph.viewerPaths = recent.filter { it.kind == FileKind.IMAGE }.map { it.path }
                                 nav.navigate(Routes.image(entry.path))
                             } else if (!Opener.open(context, entry.file)) {
                                 graph.actions.notify("No app on your phone can open this file")

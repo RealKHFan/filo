@@ -32,7 +32,7 @@ import androidx.navigation.NavController
 import app.filo.Graph
 import app.filo.data.FileEntry
 import app.filo.data.FileOps
-import app.filo.data.sortedBy
+import app.filo.data.ViewPrefsStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -67,7 +67,7 @@ class FolderViewModel(private val graph: Graph, start: File) : ViewModel() {
                     _dir.value = target
                     return@collectLatest
                 }
-                _entries.value = withContext(Dispatchers.IO) { FileOps.list(dir, s.showHidden).sortedBy(s.sort) }
+                _entries.value = withContext(Dispatchers.IO) { FileOps.list(dir, s.showHidden) }
                 shown = dir
             }
         }
@@ -90,7 +90,14 @@ class FolderViewModel(private val graph: Graph, start: File) : ViewModel() {
 
 /** Storage tab and any folder opened from elsewhere. Back goes to the previous folder. */
 @Composable
-fun FolderScreen(nav: NavController, start: File, isTab: Boolean, pickForVault: Boolean = false, active: Boolean = true) {
+fun FolderScreen(
+    nav: NavController,
+    start: File,
+    isTab: Boolean,
+    pickForVault: Boolean = false,
+    active: Boolean = true,
+    highlight: String? = null,
+) {
     val graph = LocalGraph.current
     val home = LocalHome.current
     val vm: FolderViewModel = viewModel(key = "folder:${start.absolutePath}:$pickForVault") { FolderViewModel(graph, start) }
@@ -114,8 +121,8 @@ fun FolderScreen(nav: NavController, start: File, isTab: Boolean, pickForVault: 
             else -> null
         },
         onOpenFolder = vm::open,
-        sort = settings.sort,
-        onSortChange = { order -> graph.settings.update { it.copy(sort = order) } },
+        viewKey = ViewPrefsStore.folderKey(dir),
+        viewDefaults = ViewPrefsStore.defaultsForFolder(dir, graph.storageRoot),
         currentDir = dir,
         selectionKey = dir.absolutePath,
         pickForVault = pickForVault,
@@ -124,6 +131,7 @@ fun FolderScreen(nav: NavController, start: File, isTab: Boolean, pickForVault: 
         topContent = { Breadcrumbs(volume.label, volume.root, dir, onOpen = vm::open) },
         onMenu = if (isTab) home::openMenu else null,
         active = active,
+        highlight = highlight?.takeIf { File(it).parentFile == dir },
     )
 }
 

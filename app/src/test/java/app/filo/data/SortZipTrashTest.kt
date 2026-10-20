@@ -136,3 +136,29 @@ class TrashManagerTest {
         assertEquals(0, File(tmp.root, "${TrashManager.DIR_NAME}/items").listFiles()!!.size)
     }
 }
+
+class ViewPrefsTest {
+    private val root = java.io.File("/storage/emulated/0")
+
+    @Test fun `photo folders start as a grid, others as a list`() {
+        fun level(path: String) = ViewPrefsStore.defaultsForFolder(java.io.File(root, path), root).level
+        assertEquals(ViewLevel.GRID_3, level("DCIM"))
+        assertEquals(ViewLevel.GRID_3, level("DCIM/Camera"))
+        assertEquals(ViewLevel.GRID_3, level("Pictures/Screenshots"))
+        assertEquals(ViewLevel.GRID_3, level("Download/Screenshots"))
+        assertEquals(ViewLevel.LIST, level("Download"))
+        assertEquals(ViewLevel.LIST, level("Documents/Work"))
+        assertEquals(ViewLevel.GRID_3, ViewPrefsStore.defaultsForCategory(Category.IMAGES).level)
+        assertEquals(ViewLevel.LIST, ViewPrefsStore.defaultsForCategory(Category.AUDIO).level)
+    }
+
+    @Test fun `pinch steps and saving`() {
+        assertEquals(ViewLevel.LIST_LARGE, ViewLevel.LIST.bigger())
+        assertEquals(ViewLevel.LIST_LARGE, ViewLevel.LIST_LARGE.bigger())
+        assertEquals(ViewLevel.GRID_2, ViewLevel.LIST.smaller())
+        assertEquals(ViewLevel.GRID_5, ViewLevel.GRID_5.smaller())
+        val prefs = ViewPrefs(ViewLevel.GRID_4, SortOrder(SortField.SIZE, ascending = false))
+        assertEquals(prefs, ViewPrefsStore.decode(ViewPrefsStore.encode(prefs)))
+        assertEquals(null, ViewPrefsStore.decode("garbage"))
+    }
+}

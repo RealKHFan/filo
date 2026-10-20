@@ -16,6 +16,8 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.pinch
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertCountEquals
@@ -361,6 +363,7 @@ class AppUiTest {
         clickable("DCIM").performClick()
         clickable("Camera").performClick()
         waitFor("IMG_0001.png")
+        described("Show as list").performClick() // photo folders start as a grid
         described("More options for IMG_0001.png").performClick()
         clickable("Move to hidden folder").performClick()
         waitFor("Hidden folder is locked")
@@ -438,6 +441,114 @@ class AppUiTest {
         shot("23_app_options")
     }
 
+    @Test fun picturesSwipeLeftAndRight() {
+        show()
+        openTab("Storage")
+        clickable("DCIM").performClick()
+        clickable("Camera").performClick()
+        waitFor("IMG_0001.png")
+        shot("26_camera_grid")
+        clickable("IMG_0001.png").performClick()
+        waitFor("1 of 3")
+        compose.onNode(hasTestTag("photo_pager")).performTouchInput { swipeLeft() }
+        waitFor("2 of 3")
+        waitFor("IMG_0002.png")
+        shot("27_photo_viewer")
+        compose.onNode(hasTestTag("photo_pager")).performTouchInput { swipeRight() }
+        waitFor("1 of 3")
+    }
+
+    @Test fun eachFolderKeepsItsOwnViewAndPinchResizes() {
+        show()
+        openTab("Storage")
+        clickable("Download").performClick()
+        waitFor("Invoice October.pdf")
+        described("Show as grid").performClick()
+        compose.waitForIdle()
+        val download = graph.views.get(app.filo.data.ViewPrefsStore.folderKey(File(root, "Download")), app.filo.data.ViewPrefs())
+        assertEquals(app.filo.data.ViewLevel.GRID_3, download.level)
+
+        clickable("Internal storage").performClick()
+        clickable("Documents").performClick()
+        waitFor("Notes.txt")
+        described("More options for Notes.txt").assertExists() // still a list here
+        // Pinch out: bigger list rows
+        compose.onRoot().performTouchInput {
+            pinch(Offset(centerX - 60, centerY), Offset(centerX - 300, centerY), Offset(centerX + 60, centerY), Offset(centerX + 300, centerY))
+        }
+        compose.waitForIdle()
+        val docsKey = app.filo.data.ViewPrefsStore.folderKey(File(root, "Documents"))
+        assertEquals(app.filo.data.ViewLevel.LIST_LARGE, graph.views.get(docsKey, app.filo.data.ViewPrefs()).level)
+        shot("28_large_list")
+        // Pinch in twice: back to list, then a big grid
+        repeat(2) {
+            compose.onRoot().performTouchInput {
+                pinch(Offset(centerX - 300, centerY), Offset(centerX - 60, centerY), Offset(centerX + 300, centerY), Offset(centerX + 60, centerY))
+            }
+            compose.waitForIdle()
+        }
+        assertEquals(app.filo.data.ViewLevel.GRID_2, graph.views.get(docsKey, app.filo.data.ViewPrefs()).level)
+        assertEquals("Download untouched", app.filo.data.ViewLevel.GRID_3, graph.views.get(app.filo.data.ViewPrefsStore.folderKey(File(root, "Download")), app.filo.data.ViewPrefs()).level)
+    }
+
+    @Test fun longPressAndDragSelectsSeveral() {
+        show()
+        openTab("Storage")
+        clickable("Download").performClick()
+        waitFor("Invoice October.pdf")
+        val first = compose.onNode(hasText("Boarding pass.pdf") and hasClickAction()).fetchSemanticsNode().boundsInRoot.center
+        val third = compose.onNode(hasText("OldGame.apk") and hasClickAction()).fetchSemanticsNode().boundsInRoot.center
+        compose.onRoot().performTouchInput {
+            down(first)
+            advanceEventTime(viewConfiguration.longPressTimeoutMillis + 200)
+            val steps = 10
+            for (i in 1..steps) moveTo(Offset(first.x, first.y + (third.y - first.y) * i / steps))
+            up()
+        }
+        waitFor("3 selected")
+        shot("29_drag_select")
+    }
+
+    @Test fun reviewLetsYouLookBeforeTrashing() {
+        show()
+        openTab("Review")
+        waitFor("keeping one of each", substring = true)
+        clickable("Old downloads").performClick()
+        waitFor("OldGame.apk")
+        described("More options for OldGame.apk").performClick()
+        waitFor("Show in folder")
+        listOf("Open", "File info").forEach { clickable(it).assertExists() }
+        shot("30_review_look")
+        clickable("Show in folder").performClick()
+        waitFor("Invoice October.pdf") // the Download folder, with OldGame.apk highlighted
+        compose.onNode(hasText("OldGame.apk")).assertExists()
+    }
+
+    @Test fun hiddenFolderStaysBlockedFromScreenshotsAfterViewingAPicture() {
+        val flagSecure = android.view.WindowManager.LayoutParams.FLAG_SECURE
+        fun secure() = compose.activity.window.attributes.flags and flagSecure != 0
+        graph.vault.setup("123456")
+        graph.vault.add(File(root, "DCIM/Camera/IMG_0003.png"))
+        show()
+        clickable("Hidden folder").performClick()
+        waitFor("Hidden folder is locked")
+        typePin("123456")
+        waitFor("IMG_0003.png")
+        assertTrue("blocked inside the folder", secure())
+        clickable("IMG_0003.png").performClick()
+        waitFor("IMG_0003.png")
+        compose.waitForIdle()
+        assertTrue("blocked while viewing", secure())
+        back() // from the picture back to the folder: this used to switch the protection off
+        compose.waitForIdle()
+        compose.waitUntil(15_000) { compose.onAllNodes(hasText("Add files"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        assertTrue("still blocked back in the folder", secure())
+        back() // leave the hidden folder
+        compose.waitUntil(5_000) { !graph.vault.unlocked.value }
+        compose.waitForIdle()
+        assertFalse("normal screens can be captured again", secure())
+    }
+
     @Test fun aboutLinksToRepoAndShowsLicense() {
         show()
         described("Open menu").performClick()
@@ -461,7 +572,7 @@ class AppUiTest {
         listOf("Favorites", "Hidden folder").forEach { compose.onAllNodes(hasText(it) and hasClickAction()).assertCountEquals(2) }
         shot("17_menu")
         clickable("About").performClick()
-        waitFor("Version 1.2.0")
+        waitFor("Version 1.3.0")
         shot("18_about")
     }
 
