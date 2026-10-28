@@ -22,8 +22,8 @@ android {
         applicationId = "app.filo"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.5.0"
+        versionCode = 11
+        versionName = "1.6.3"
     }
 
     signingConfigs {
@@ -66,7 +66,11 @@ android {
     }
 
     packaging {
-        resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}", "/META-INF/*.version", "DebugProbesKt.bin")
+        resources.excludes += setOf(
+            "/META-INF/{AL2.0,LGPL2.1}", "/META-INF/*.version", "DebugProbesKt.bin",
+            // The libraries' license texts are shown in About → Open source libraries instead.
+            "/META-INF/LICENSE*", "/META-INF/NOTICE*", "/META-INF/DEPENDENCIES", "/META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+        )
     }
 
     testOptions {
@@ -112,6 +116,10 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-compose:3.3.0")
     implementation("io.coil-kt.coil3:coil-video:3.3.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // File servers (only used when you switch them on in Settings)
+    implementation("com.hierynomus:smbj:0.15.0")
+    implementation("com.rapid7.client:dcerpc:0.12.13") // lists the shares on an SMB server
+    implementation("commons-net:commons-net:3.13.0")
 
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
@@ -124,4 +132,5 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     testImplementation("io.github.takahirom.roborazzi:roborazzi:1.50.0")
     testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.50.0")
+    testImplementation("org.mockftpserver:MockFtpServer:3.2.0")
 }

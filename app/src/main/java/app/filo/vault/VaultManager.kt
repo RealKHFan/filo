@@ -1,5 +1,6 @@
 package app.filo.vault
 
+import app.filo.data.ExactBytes
 import app.filo.data.FileKind
 import app.filo.data.FileOps
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -8,6 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.io.FilterInputStream
 import java.io.IOException
 import java.io.InputStream
@@ -382,12 +384,12 @@ class VaultManager(
             val subfolders = dir.walkTopDown().filter { it.isDirectory && it != dir }.map { join(top, it.relativeTo(dir).path) }
             idx.copy(folders = idx.folders + withParents(top) + subfolders, origins = idx.origins + (top to dir.absolutePath))
         }
-        var count = 0
+        val hidden = mutableListOf<File>()
         try {
             dir.walkTopDown().filter { it.isFile }.forEach { file ->
                 val relative = file.parentFile!!.relativeTo(dir).path
                 add(file, deleteOriginal = false, key = key, folder = if (relative.isEmpty()) top else join(top, relative), onBytes = onBytes)
-                count++
+                hidden += file
             }
         } catch (e: Throwable) {
             // Something failed: take the half-copied folder back out of here, the original stays untouched.
@@ -397,8 +399,11 @@ class VaultManager(
             }
             throw e
         }
-        if (!dir.deleteRecursively()) throw IOException("${dir.name} was hidden, but the original couldn't be fully deleted")
-        return count
+        // Only what was hidden: a photo saved into the folder meanwhile stays where it is.
+        val kept = hidden.count { !it.delete() }
+        dir.walkBottomUp().filter { it.isDirectory }.forEach { it.delete() } // only empty folders go
+        if (kept > 0) throw IOException("${dir.name} was hidden, but the original couldn't be fully deleted")
+        return hidden.size
     }
 
     /** Hides several files into the top of the hidden folder. */
@@ -420,9 +425,7 @@ class VaultManager(
         val blob = File(blobDir, "$id.bin")
         try {
             source.inputStream().buffered().use { input ->
-                blob.outputStream().buffered().use { output ->
-                    StreamCipher.encrypt(CountingInputStream(input, onBytes), output, key)
-                }
+                writeSynced(blob) { output -> StreamCipher.encrypt(CountingInputStream(input, onBytes), output, key) }
             }
             // Read the encrypted copy back completely before touching the original.
             blob.inputStream().buffered().use { StreamCipher.decrypt(it, NullOutputStream, key) }
@@ -537,9 +540,9 @@ class VaultManager(
     /** Small files (thumbnails, the image viewer) are decrypted in memory only. */
     fun readBytes(item: VaultItem, maxBytes: Long = 40_000_000L): ByteArray? {
         if (item.size > maxBytes) return null
-        val out = ByteArrayOutputStream(item.size.toInt().coerceAtLeast(32))
+        val out = ExactBytes(item.size)
         File(blobDir, "${item.id}.bin").inputStream().buffered().use { StreamCipher.decrypt(it, out, key()) }
-        return out.toByteArray()
+        return out.bytes()
     }
 
     /**
@@ -597,7 +600,7 @@ class VaultManager(
         }
         val plain = ByteArrayOutputStream().also { props.store(it, null) }.toByteArray()
         val tmp = File(dir, "index.tmp")
-        tmp.outputStream().use { StreamCipher.encrypt(ByteArrayInputStream(plain), it, key) }
+        writeSynced(tmp) { StreamCipher.encrypt(ByteArrayInputStream(plain), it, key) }
         if (!tmp.renameTo(indexFile)) {
             indexFile.delete()
             if (!tmp.renameTo(indexFile)) throw IOException("Couldn't save the hidden folder list")
@@ -637,10 +640,20 @@ class VaultManager(
         if (keysFile.exists()) keysFile.inputStream().use { load(it) }
     }
 
+    /** Writes [file] all the way to the disk, so a sudden power loss can't leave it empty or half written. */
+    private inline fun writeSynced(file: File, write: (OutputStream) -> Unit) {
+        FileOutputStream(file).use { out ->
+            val buffered = out.buffered()
+            write(buffered)
+            buffered.flush()
+            out.fd.sync()
+        }
+    }
+
     private fun save(props: Properties) {
         dir.mkdirs()
         val tmp = File(dir, "keys.tmp")
-        tmp.outputStream().use { props.store(it, null) }
+        writeSynced(tmp) { props.store(it, null) }
         if (!tmp.renameTo(keysFile)) {
             keysFile.delete()
             if (!tmp.renameTo(keysFile)) throw IOException("Couldn't save hidden folder settings")

@@ -8,20 +8,44 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.CancellationException
 import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 object ZipUtils {
-    /** Extracts [zip] into a new folder next to it. Refuses entries that try to escape that folder. */
+    /** Size after unpacking, for the progress bar; the zip's own size if its list can't be read. */
+    fun unpackedSize(zip: File): Long = runCatching {
+        ZipFile(zip).use { z -> z.entries().asSequence().sumOf { it.size.coerceAtLeast(0) } }
+    }.getOrDefault(zip.length())
+
+    /** Unzipping stops before the phone has less free space than this. */
+    const val KEEP_FREE = 200L * 1024 * 1024
+
+    /**
+     * Extracts [zip] into a new folder next to it. Refuses entries that try to escape that folder,
+     * and stops before the phone fills up, also when the zip lies about its size (a "zip bomb").
+     */
     fun extract(
         zip: File,
         destParent: File,
         onBytes: (Long) -> Unit = {},
         isCancelled: () -> Boolean = { false },
+        keepFree: Long = KEEP_FREE,
     ): File {
+        val full = "Not enough free space to unzip ${zip.name}"
+        if (unpackedSize(zip) > destParent.usableSpace - keepFree) throw IOException(full)
         val outDir = FileOps.uniqueTarget(destParent, zip.name.substringBeforeLast('.', zip.name))
         if (!outDir.mkdirs()) throw IOException("Couldn't create ${outDir.name}")
         val outCanonical = outDir.canonicalPath
+        var sinceCheck = 0L
+        val written: (Long) -> Unit = { n ->
+            onBytes(n)
+            sinceCheck += n
+            if (sinceCheck >= 1024 * 1024) {
+                sinceCheck = 0
+                if (outDir.usableSpace < keepFree) throw IOException(full)
+            }
+        }
         try {
             ZipInputStream(BufferedInputStream(zip.inputStream())).use { zis ->
                 while (true) {
@@ -35,7 +59,7 @@ object ZipUtils {
                         target.mkdirs()
                     } else {
                         target.parentFile?.mkdirs()
-                        target.outputStream().use { pump(zis, it, onBytes, isCancelled) }
+                        target.outputStream().use { pump(zis, it, written, isCancelled) }
                         if (entry.time > 0) target.setLastModified(entry.time)
                     }
                 }

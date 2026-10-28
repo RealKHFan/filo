@@ -9,3 +9,5 @@ signing/
 .DS_Store
 captures/
 .kotlin/
+*.p12
+keystore-info.txt

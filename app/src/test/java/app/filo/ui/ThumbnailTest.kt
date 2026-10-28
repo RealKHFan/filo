@@ -11,6 +11,7 @@ import coil3.request.SuccessResult
 import coil3.request.allowHardware
 import coil3.imageDecoderEnabled
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -37,5 +38,18 @@ class ThumbnailTest {
         if (result is ErrorResult) result.throwable.printStackTrace()
         assertTrue("got $result", result is SuccessResult)
         println("THUMB ${(result as SuccessResult).image.width}x${result.image.height}")
+    }
+
+    private fun png(width: Int, height: Int): ByteArray = java.io.ByteArrayOutputStream().also { out ->
+        Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF1D9E75.toInt()) }.compress(Bitmap.CompressFormat.PNG, 100, out)
+    }.toByteArray()
+
+    @Test fun `hidden and server pictures decode small, wide panoramas too`() {
+        val photo = decodeImage(png(4000, 3000), 256)!!
+        assertEquals(500 to 375, photo.width to photo.height) // sharp enough for a cropped thumbnail
+
+        val panorama = decodeImage(png(8200, 2100), 2048)!!
+        assertTrue("${panorama.width}x${panorama.height}", panorama.width.toLong() * panorama.height <= 16_000_000)
+        assertEquals(4100, panorama.width)
     }
 }

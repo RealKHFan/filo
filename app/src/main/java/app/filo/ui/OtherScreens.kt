@@ -40,7 +40,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Delete
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import app.filo.data.FileEntry
 import androidx.compose.material3.Surface
 import androidx.compose.material.icons.outlined.SelectAll
@@ -328,10 +330,35 @@ fun SettingsScreen(nav: NavController) {
             }
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            SectionHeader("Network", Modifier.padding(horizontal = 16.dp))
+            val networkAllowed = rememberNetworkAllowed()
+            SwitchRow(
+                "File servers",
+                when {
+                    !settings.networkServers -> "Off: Filo doesn't connect to anything. Switch on to reach SMB and FTP servers on your home network."
+                    !networkAllowed -> "Waiting for Android's Network permission. Tap here, then Permissions → Network → Allow."
+                    else -> "On: Network appears under Collections. Filo only connects to servers you add, on your home network."
+                },
+                settings.networkServers,
+            ) { on ->
+                graph.settings.update { it.copy(networkServers = on) }
+                if (!on) graph.sessions.close()
+                if (on && !graph.networkPermission.granted()) openAppInfo(context)
+            }
+
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
             SectionHeader("Privacy", Modifier.padding(horizontal = 16.dp))
             ListItem(
-                headlineContent = { Text("No internet access") },
-                supportingContent = { Text("Filo can't connect to the internet at all, so your files never leave your phone.") },
+                headlineContent = { Text(if (settings.networkServers) "Local network only" else "No internet access") },
+                supportingContent = {
+                    Text(
+                        if (settings.networkServers) {
+                            "Filo refuses any address outside your home network or your own VPN. Nothing goes to the internet."
+                        } else {
+                            "Filo doesn't connect to anything, so your files never leave your phone."
+                        },
+                    )
+                },
             )
             SectionHeader("Hidden folder", Modifier.padding(horizontal = 16.dp))
             ListItem(
@@ -485,13 +512,20 @@ fun AboutScreen(nav: NavController) {
                 modifier = Modifier.clickableRow { nav.navigate(Routes.license("gpl")) },
             )
             ListItem(
-                headlineContent = { Text("No internet access") },
-                supportingContent = { Text("Filo can't connect to anything. No ads, no tracking, no Google services.") },
+                headlineContent = { Text("Private by design") },
+                supportingContent = {
+                    Text("No ads, no tracking, no Google services. Filo only goes online for file servers you switch on, and only on your home network.")
+                },
             )
             ListItem(
                 headlineContent = { Text("Font") },
                 supportingContent = { Text("Plus Jakarta Sans by Tokotype, SIL Open Font License 1.1. Read the font license") },
                 modifier = Modifier.clickableRow { nav.navigate(Routes.license("font")) },
+            )
+            ListItem(
+                headlineContent = { Text("Open source libraries") },
+                supportingContent = { Text("Jetpack Compose, Coil, smbj, Apache Commons Net and others, with their licenses") },
+                modifier = Modifier.clickableRow { nav.navigate(Routes.license("libraries")) },
             )
             Spacer(Modifier.height(24.dp))
         }
@@ -506,13 +540,17 @@ const val REPO_URL = "https://github.com/RealKHFan/filo"
 fun LicenseScreen(nav: NavController, which: String) {
     val context = LocalContext.current
     val text = remember(which) {
-        val res = if (which == "font") app.filo.R.raw.ofl else app.filo.R.raw.gpl3
+        val res = when (which) {
+            "font" -> app.filo.R.raw.ofl
+            "libraries" -> app.filo.R.raw.libraries
+            else -> app.filo.R.raw.gpl3
+        }
         context.resources.openRawResource(res).bufferedReader().use { it.readText() }
     }
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (which == "font") "Font license" else "License") },
+                title = { Text(when (which) { "font" -> "Font license"; "libraries" -> "Open source libraries"; else -> "License" }) },
                 navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
             )
         },
@@ -529,10 +567,8 @@ fun LicenseScreen(nav: NavController, which: String) {
 
 // ---------------------------------------------------------------- Image viewer
 
-/** The pictures to swipe through: the list the opening screen showed, or the file's folder. */
-private fun viewerList(graph: app.filo.Graph, file: File): List<String> {
-    val given = graph.viewerPaths
-    if (file.absolutePath in given) return given
+/** The pictures in [file]'s folder, for when the opening screen gave no list (e.g. after Android closed Filo). */
+private fun folderPictures(file: File): List<String> {
     val siblings = file.parentFile?.listFiles()?.filter { it.isFile && !it.name.startsWith(".") && FileKind.ofName(it.name) == FileKind.IMAGE }
         ?.sortedWith(compareBy(app.filo.data.NaturalOrder) { it.name })
         ?.map { it.absolutePath }
@@ -545,9 +581,11 @@ private fun viewerList(graph: app.filo.Graph, file: File): List<String> {
 fun ImageViewerScreen(nav: NavController, file: File) {
     val graph = LocalGraph.current
     val context = LocalContext.current
-    val paths = remember { androidx.compose.runtime.mutableStateListOf<String>().apply { addAll(viewerList(graph, file)) } }
+    // The list the opening screen showed, or the file's folder, listed off the main thread: it can hold thousands of photos.
+    val paths = remember { androidx.compose.runtime.mutableStateListOf<String>().apply { graph.viewerPaths.takeIf { file.absolutePath in it }?.let { addAll(it) } } }
+    LaunchedEffect(Unit) { if (paths.isEmpty()) paths.addAll(withContext(Dispatchers.IO) { folderPictures(file) }) }
     if (paths.isEmpty()) {
-        LaunchedEffect(Unit) { nav.popBackStack() }
+        Box(Modifier.fillMaxSize().background(Color.Black))
         return
     }
     PhotoPager(

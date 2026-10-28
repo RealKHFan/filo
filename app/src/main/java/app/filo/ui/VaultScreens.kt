@@ -106,9 +106,12 @@ import app.filo.data.Opener
 import app.filo.vault.UnlockResult
 import app.filo.vault.VaultItem
 import app.filo.vault.VaultManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import android.util.LruCache
@@ -255,13 +258,27 @@ private fun authenticate(
     prompt.authenticate(info, BiometricPrompt.CryptoObject(cipher))
 }
 
+/** Pictures bigger than this aren't loaded into memory: about 64 MB on most phones. */
+internal fun pictureLimit(): Long = Runtime.getRuntime().maxMemory() / 4
+
+/** Thumbnails decode at most two pictures at a time, so a folder of big photos can't run Filo out of memory. */
+internal val pictureSlots = Semaphore(2)
+
+/** Shown instead of a picture that is too big or that Android can't read. */
+@Composable
+internal fun PictureProblem(modifier: Modifier) {
+    Box(modifier, contentAlignment = Alignment.Center) { Text("Can't show this picture here", color = androidx.compose.ui.graphics.Color.White) }
+}
+
 /** Decodes a picture at roughly [target] pixels, upright according to its EXIF data. */
-private fun decodeImage(bytes: ByteArray, target: Int): ImageBitmap? {
+internal fun decodeImage(bytes: ByteArray, target: Int): ImageBitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
     if (bounds.outWidth <= 0) return null
     var sample = 1
     while (bounds.outWidth / (sample * 2) >= target && bounds.outHeight / (sample * 2) >= target) sample *= 2
+    // Very wide panoramas: stay under 16 megapixels, or the screen refuses to draw them.
+    while (bounds.outWidth.toLong() / sample * (bounds.outHeight / sample) > 16_000_000) sample *= 2
     val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
         ?: return null
     val rotation = try {
@@ -704,9 +721,10 @@ private class VaultThumbs(private val vault: VaultManager, private val lookup: (
             if (value == null && item != null && item.kind == FileKind.IMAGE) {
                 value = withContext(Dispatchers.IO) {
                     try {
-                        vault.readBytes(item, 25_000_000L)?.let { decodeImage(it, 256) }
-                    } catch (_: Exception) {
-                        null
+                        pictureSlots.withPermit { vault.readBytes(item, 25_000_000L)?.let { decodeImage(it, 256) } }
+                    } catch (e: Throwable) {
+                        if (e is CancellationException) throw e
+                        null // not a picture Android can read, or too big for memory
                     }
                 }
                 value?.let { cache.put(entry.path, it) }
@@ -1242,20 +1260,23 @@ fun VaultImageScreen(nav: NavController, id: String) {
         },
     ) { page, modifier ->
         val item = pictures[page]
+        var failed by remember(item.id) { mutableStateOf(false) }
         val bitmap by produceState<ImageBitmap?>(null, item.id) {
             value = withContext(Dispatchers.IO) {
                 try {
-                    graph.vault.readBytes(item, 200_000_000L)?.let { decodeImage(it, 2048) }
-                } catch (_: Exception) {
-                    null
+                    graph.vault.readBytes(item, pictureLimit())?.let { decodeImage(it, 2048) }
+                } catch (e: Throwable) {
+                    if (e is CancellationException) throw e
+                    null // not a picture Android can read, or too big for memory
                 }
             }
+            failed = value == null
         }
         val bmp = bitmap
-        if (bmp != null) {
-            Image(bmp, contentDescription = item.name, contentScale = ContentScale.Fit, modifier = modifier)
-        } else {
-            Box(modifier, contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        when {
+            bmp != null -> Image(bmp, contentDescription = item.name, contentScale = ContentScale.Fit, modifier = modifier)
+            failed -> PictureProblem(modifier)
+            else -> Box(modifier, contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         }
     }
     PrivacyCurtain()

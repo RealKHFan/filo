@@ -173,7 +173,15 @@ fun FileCollectionScreen(
         if (!nav.popBackStack(Routes.VAULT, inclusive = false)) nav.navigate(Routes.VAULT)
     }
 
+    val servers by graph.servers.servers.collectAsStateWithLifecycle()
+    var picking by remember { mutableStateOf<Pair<ClipMode, List<String>>?>(null) }
+
     fun clip(mode: ClipMode, paths: Collection<String>) {
+        // With file servers set up, first choose where it goes: this phone or a server.
+        if (settings.networkServers && servers.isNotEmpty()) {
+            picking = mode to paths.toList()
+            return
+        }
         actions.setClip(mode, paths)
         selection = emptySet()
         if (currentDir == null) home.showTab(nav, Tabs.STORAGE)
@@ -367,6 +375,14 @@ fun FileCollectionScreen(
     }
 
     info?.let { FileInfoDialog(it) { info = null } }
+
+    picking?.let { (mode, paths) ->
+        StoragePicker(mode, paths.size, currentServerId = null, onDismiss = { picking = null }) { destination ->
+            actions.setClip(mode, paths)
+            selection = emptySet()
+            openDestination(destination, nav, home, currentDir = currentDir)
+        }
+    }
 
     extracting?.let { entry ->
         AlertDialog(

@@ -2,6 +2,8 @@
 <paths>
     <external-path name="storage" path="." />
     <cache-path name="hidden_open" path="vault_open/" />
+    <!-- Files from a server, downloaded to open or share them; deleted the next time Filo starts -->
+    <cache-path name="server_open" path="net_open/" />
     <!-- SD cards and USB drives live outside the primary storage path -->
     <root-path name="volumes" path="storage/" />
 </paths>

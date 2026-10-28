@@ -16,6 +16,12 @@ import app.filo.data.StoragePermission
 import app.filo.data.TrashManager
 import app.filo.data.ViewPrefsStore
 import app.filo.data.without
+import app.filo.net.DefaultConnector
+import app.filo.net.NetworkPermission
+import app.filo.net.RemoteConnector
+import app.filo.net.RemoteFile
+import app.filo.net.ServerSessions
+import app.filo.net.ServerStore
 import app.filo.vault.AndroidBiometricKey
 import app.filo.vault.AndroidDeviceKey
 import app.filo.vault.BiometricKey
@@ -44,6 +50,10 @@ class Graph(
     deviceKey: KeyWrap = AndroidDeviceKey(context.packageManager),
     val biometricKey: BiometricKey = AndroidBiometricKey(),
     pinKdf: PinKdf = PinKdf(),
+    /** Android's Network permission (GrapheneOS can switch it off). */
+    val networkPermission: NetworkPermission = NetworkPermission.forContext(context),
+    serverKey: KeyWrap = AndroidDeviceKey(context.packageManager, alias = "filo_servers_v1"),
+    connector: RemoteConnector? = null,
 ) {
     private val prefs = context.getSharedPreferences("filo", Context.MODE_PRIVATE)
     val settings = SettingsStore(prefs)
@@ -56,6 +66,20 @@ class Graph(
     val trash = TrashManager(File(storageRoot, TrashManager.DIR_NAME))
     val vault = VaultManager(File(context.filesDir, "vault"), File(context.cacheDir, "vault_open"), deviceKey, pinKdf)
     val review = ReviewController(this)
+    /** File servers (SMB, FTP). Passwords are sealed with the phone's hardware key. */
+    val servers = ServerStore(context.getSharedPreferences("filo_servers", Context.MODE_PRIVATE), serverKey)
+    val sessions = ServerSessions(
+        servers,
+        connector ?: DefaultConnector { server, certificate ->
+            // Onto the saved copy, and only if it's still the same server: it may have been edited or deleted meanwhile.
+            servers.get(server.id)?.takeIf { it.host == server.host && it.port == server.port && it.certificate == null }
+                ?.let { servers.save(it.copy(certificate = certificate), null) }
+        },
+        networkPermission,
+    ) { settings.state.value.networkServers }
+
+    /** The server pictures the image viewer can swipe through. */
+    @Volatile var remoteViewer: List<RemoteFile> = emptyList()
     val actions = FileActions(context, this)
 
     val downloadsDir: File get() = File(storageRoot, Environment.DIRECTORY_DOWNLOADS)

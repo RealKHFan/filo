@@ -52,14 +52,54 @@ class ZipUtilsTest {
         val zip = ZipUtils.compress(listOf(folder, single), tmp.root)
         assertEquals("Archive.zip", zip.name)
         assertEquals("Trip.zip", ZipUtils.defaultName(listOf(folder)))
+        assertEquals("progress counts unpacked bytes", 5L + 300_000 + 4, ZipUtils.unpackedSize(zip))
+        val broken = File(tmp.root, "broken.zip").apply { writeText("not a zip") }
+        assertEquals(broken.length(), ZipUtils.unpackedSize(broken))
 
-        val out = ZipUtils.extract(zip, tmp.root)
+        var unpacked = 0L
+        val out = ZipUtils.extract(zip, tmp.root, onBytes = { unpacked += it })
+        assertEquals(ZipUtils.unpackedSize(zip), unpacked)
         assertEquals("Archive", out.name)
         assertEquals("alpha", File(out, "Trip/a.txt").readText())
         assertTrue(File(out, "Trip/sub/b.bin").readBytes().contentEquals(File(folder, "sub/b.bin").readBytes()))
         assertEquals("# hi", File(out, "notes.md").readText())
         // Extracting again creates "Archive (1)" instead of mixing files
         assertEquals("Archive (1)", ZipUtils.extract(zip, tmp.root).name)
+    }
+
+    @Test fun `unzipping never fills the phone, even when the zip lies about its size`() {
+        val bomb = File(tmp.root, "bomb.zip")
+        val dataEnd: Long
+        ZipOutputStream(bomb.outputStream()).use { z ->
+            z.putNextEntry(ZipEntry("zeros.bin"))
+            val mb = ByteArray(1024 * 1024)
+            repeat(100) { z.write(mb) } // 100 MB that packs into about 100 kB
+            z.closeEntry()
+            dataEnd = bomb.length()
+        }
+        val roomFor20Mb = tmp.root.usableSpace - 20_000_000
+
+        // Honest size: refused before anything is written
+        var written = 0L
+        try {
+            ZipUtils.extract(bomb, tmp.root, onBytes = { written += it }, keepFree = roomFor20Mb)
+            fail("unzipped 100 MB with room for 20")
+        } catch (e: IOException) {
+            assertTrue(e.message!!.contains("Not enough free space"))
+        }
+        assertEquals(0L, written)
+        assertFalse(File(tmp.root, "bomb").exists())
+
+        // Lying zip (its list of contents cut off, so the size can't be known first): stopped on the way
+        java.io.RandomAccessFile(bomb, "rw").use { it.setLength(dataEnd) }
+        try {
+            ZipUtils.extract(bomb, tmp.root, onBytes = { written += it }, keepFree = roomFor20Mb)
+            fail("unzipped 100 MB with room for 20")
+        } catch (e: IOException) {
+            assertTrue(e.message!!.contains("Not enough free space"))
+        }
+        assertTrue("stopped early, not after $written bytes", written in 1..60_000_000)
+        assertFalse("half-unpacked folder removed", File(tmp.root, "bomb").exists())
     }
 
     @Test fun `zip slip is refused and leaves nothing behind`() {

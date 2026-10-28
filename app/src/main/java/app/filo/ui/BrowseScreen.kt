@@ -22,6 +22,7 @@ import androidx.compose.material.icons.outlined.Android
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Lan
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.MusicNote
@@ -139,10 +140,19 @@ fun BrowseScreen(nav: NavController) {
 
         item { SectionHeader("Collections") }
         item {
+            val servers by graph.servers.servers.collectAsStateWithLifecycle()
             TileGrid(
-                listOf(
+                listOfNotNull(
                     TileSpec("Favorites", Icons.Outlined.Star, itemCount(favoriteCount)) { nav.navigate(Routes.FAVORITES) },
                     TileSpec("Hidden folder", Icons.Outlined.Lock, "PIN protected") { nav.navigate(Routes.VAULT) },
+                    // File servers: only once switched on in Settings.
+                    if (settings.networkServers) {
+                        TileSpec("Network", Icons.Outlined.Lan, if (servers.isEmpty()) "SMB, FTP" else if (servers.size == 1) "1 server" else "${servers.size} servers") {
+                            nav.navigate(Routes.NETWORK)
+                        }
+                    } else {
+                        null
+                    },
                 ),
             )
         }

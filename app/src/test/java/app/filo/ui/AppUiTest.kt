@@ -71,7 +71,7 @@ import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
 
 /** Index of the phone's media, faked from the test folder. */
-private class FakeMedia(private val root: File) : MediaSource {
+internal class FakeMedia(private val root: File) : MediaSource {
     private fun all(showHidden: Boolean) = root.walkTopDown()
         .onEnter { it == root || ((showHidden || !it.name.startsWith(".")) && it.name != TrashManager.DIR_NAME) }
         .filter { it.isFile && (showHidden || !it.name.startsWith(".")) }
@@ -96,7 +96,7 @@ private class FakeMedia(private val root: File) : MediaSource {
         Category.entries.associateWith { c -> category(c, showHidden).sumOf { it.size } }
 }
 
-private object FakeApps : AppsSource {
+internal object FakeApps : AppsSource {
     private val all = listOf(
         AppInfo("org.example.notes", "Notes", "2.1", 14_500_000, null, false, 1_760_000_000_000, listOf("/x/base.apk")),
         AppInfo("org.example.maps", "Offline Maps", "5.0.3", 96_000_000, null, false, 1_755_000_000_000, listOf("/x/base.apk", "/x/split.apk")),
@@ -107,7 +107,7 @@ private object FakeApps : AppsSource {
     override fun hasUsageAccess() = false
 }
 
-private object NoBiometric : BiometricKey {
+internal object NoBiometric : BiometricKey {
     override fun newEncryptCipher(): Cipher = throw UnsupportedOperationException()
     override fun decryptCipher(iv: ByteArray): Cipher = throw UnsupportedOperationException()
     override fun delete() {}
@@ -603,7 +603,7 @@ class AppUiTest {
         listOf("Favorites", "Hidden folder").forEach { compose.onAllNodes(hasText(it) and hasClickAction()).assertCountEquals(2) }
         shot("17_menu")
         clickable("About").performClick()
-        waitFor("Version 1.5.0")
+        waitFor("Version 1.6.3")
         shot("18_about")
     }
 
@@ -614,6 +614,7 @@ class AppUiTest {
         waitFor("Show hidden files")
         waitFor("After 5 seconds")
         shot("19_settings")
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText("Lock after leaving Filo"))
         clickable("Lock after leaving Filo").performClick()
         clickable("After 30 seconds").performClick()
         assertEquals(30, graph.settings.state.value.autoLockSeconds)

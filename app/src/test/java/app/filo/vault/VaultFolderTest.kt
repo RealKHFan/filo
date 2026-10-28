@@ -170,6 +170,18 @@ class VaultFolderTest {
         assertEquals(0, File(tmp.root, "vault/blobs").listFiles()!!.size)
     }
 
+    @Test fun `a file saved into the folder while it is being hidden stays where it is`() {
+        val v = vault()
+        v.setup("123456")
+        file("Camera/one.jpg", "1")
+        val camera = File(storage, "Camera")
+        val late = File(camera, "late.jpg")
+        assertEquals(1, v.hide(listOf(camera)) { if (!late.exists()) late.writeText("new photo") })
+        assertEquals("new photo", late.readText())
+        assertFalse(File(camera, "one.jpg").exists())
+        assertEquals(listOf("one.jpg"), v.items.value.map { it.name })
+    }
+
     @Test fun `vault from before folders still opens`() {
         val v = vault()
         v.setup("123456")

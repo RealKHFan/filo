@@ -55,6 +55,7 @@ class FiloApplication : Application(), SingletonImageLoader.Factory {
         Thread {
             try {
                 graph.vault.clearTemp()
+                java.io.File(cacheDir, "net_open").deleteRecursively() // files opened from servers
                 if (graph.permission.granted.value) graph.trash.purgeExpired()
             } catch (_: Exception) {
             }

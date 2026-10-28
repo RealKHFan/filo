@@ -1,5 +1,6 @@
 package app.filo.data
 
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
@@ -9,6 +10,11 @@ import java.util.Locale
 import java.util.concurrent.CancellationException
 
 /** Plain java.io file operations. No Android types, so everything here is unit-tested on the JVM. */
+/** Collects about [size] bytes and hands back its own array instead of a second copy (big pictures). */
+class ExactBytes(size: Long) : ByteArrayOutputStream(size.coerceIn(32, Int.MAX_VALUE - 8L).toInt()) {
+    fun bytes(): ByteArray = if (count == buf.size) buf else toByteArray()
+}
+
 object FileOps {
     /** Folders Filo creates for itself; never shown in lists. */
     val internalNames = setOf(TrashManager.DIR_NAME)

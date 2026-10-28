@@ -128,6 +128,10 @@ object Routes {
     const val SETTINGS = "settings"
     const val IMAGE = "image?path={path}"
     const val VAULT_IMAGE = "vault_image/{id}"
+    const val NETWORK = "network"
+    const val SERVER = "server/{id}"
+    const val SERVER_EDIT = "server_edit?id={id}"
+    const val SERVER_IMAGE = "server_image/{id}?path={path}"
 
     fun folder(path: String, pickForVault: Boolean = false, highlight: String? = null) =
         "folder?path=${Uri.encode(path)}&pick=$pickForVault" + (highlight?.let { "&highlight=${Uri.encode(it)}" } ?: "")
@@ -135,6 +139,9 @@ object Routes {
     fun reviewList(kind: ReviewKind) = "review/${kind.name}"
     fun image(path: String) = "image?path=${Uri.encode(path)}"
     fun vaultImage(id: String) = "vault_image/$id"
+    fun server(id: String) = "server/$id"
+    fun serverEdit(id: String?) = "server_edit" + (id?.let { "?id=$it" } ?: "")
+    fun serverImage(id: String, path: String) = "server_image/$id?path=${Uri.encode(path)}"
 }
 
 fun FileKind.icon(): ImageVector = when (this) {

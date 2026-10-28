@@ -17,6 +17,8 @@ data class Settings(
     val showSystemApps: Boolean = false,
     /** App + data + cache sizes; needs Usage access, which you grant yourself in Android settings. */
     val fullAppSizes: Boolean = false,
+    /** SMB and FTP servers on your home network. Off until you switch it on. */
+    val networkServers: Boolean = false,
 )
 
 class SettingsStore(private val prefs: SharedPreferences) {
@@ -32,6 +34,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
             putInt("autoLockSeconds", next.autoLockSeconds)
             putBoolean("showSystemApps", next.showSystemApps)
             putBoolean("fullAppSizes", next.fullAppSizes)
+            putBoolean("networkServers", next.networkServers)
         }
         _state.value = next
     }
@@ -45,6 +48,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
             autoLockSeconds = prefs.getInt("autoLockSeconds", defaults.autoLockSeconds),
             showSystemApps = prefs.getBoolean("showSystemApps", defaults.showSystemApps),
             fullAppSizes = prefs.getBoolean("fullAppSizes", defaults.fullAppSizes),
+            networkServers = prefs.getBoolean("networkServers", defaults.networkServers),
         )
     }
 

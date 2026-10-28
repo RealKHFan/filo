@@ -30,7 +30,10 @@
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
 
-    <!-- Filo deliberately has NO internet permission. -->
+    <!-- Only for file servers (SMB, FTP) on your home network, and only once you switch them on in
+         Settings. On GrapheneOS this is the "Network" permission; it stays off after an update until
+         you allow it. Filo refuses every address outside your local network. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:name=".FiloApplication"

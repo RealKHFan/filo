@@ -132,7 +132,12 @@ object AppActions {
         val base = "${app.label}-${app.versionName}".replace(Regex("[\\\\/:*?\"<>|]"), "_").trim('-', ' ')
         if (app.apkPaths.size == 1) {
             val target = FileOps.uniqueTarget(destDir, "$base.apk")
-            File(app.apkPaths.first()).copyTo(target)
+            try {
+                File(app.apkPaths.first()).copyTo(target)
+            } catch (e: Throwable) {
+                target.delete() // a half-saved APK would only fail to install later
+                throw e
+            }
             return target
         }
         val target = FileOps.uniqueTarget(destDir, "$base.apks")

@@ -31,6 +31,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DonutLarge
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Lan
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Star
@@ -229,6 +230,24 @@ private fun FiloNav(pendingRoute: StateFlow<String?>, onRouteHandled: () -> Unit
             composable(Routes.VAULT_IMAGE, arguments = listOf(navArgument("id") { type = NavType.StringType })) {
                 VaultImageScreen(nav, it.arguments?.getString("id").orEmpty())
             }
+            composable(Routes.NETWORK) { NetworkScreen(nav) }
+            composable(Routes.SERVER, arguments = listOf(navArgument("id") { type = NavType.StringType })) {
+                ServerScreen(nav, it.arguments?.getString("id").orEmpty())
+            }
+            composable(
+                Routes.SERVER_EDIT,
+                arguments = listOf(
+                    navArgument("id") {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    },
+                ),
+            ) { ServerEditScreen(nav, it.arguments?.getString("id")) }
+            composable(
+                Routes.SERVER_IMAGE,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }, navArgument("path") { type = NavType.StringType }),
+            ) { ServerImageScreen(nav, it.arguments?.getString("id").orEmpty(), it.arguments?.getString("path").orEmpty()) }
         }
         SnackbarHost(
             snackbar,
@@ -368,6 +387,9 @@ private fun FiloDrawer(onNavigate: (String) -> Unit) {
         }
         item("Favorites", Icons.Outlined.Star, Routes.FAVORITES)
         item("Hidden folder", Icons.Outlined.Lock, Routes.VAULT)
+        if (LocalGraph.current.settings.state.collectAsStateWithLifecycle().value.networkServers) {
+            item("Network", Icons.Outlined.Lan, Routes.NETWORK)
+        }
         HorizontalDivider(Modifier.padding(horizontal = 28.dp, vertical = 8.dp))
         item("Settings", Icons.Outlined.Settings, Routes.SETTINGS)
         item("About", Icons.Outlined.Info, Routes.ABOUT)
@@ -399,7 +421,7 @@ private fun OperationDialog() {
                     if (progress != null) {
                         LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                         Spacer(Modifier.height(8.dp))
-                        Text("${(progress * 100).toInt()} %")
+                        Text("${(progress * 100).toInt()} %" + (op.detail?.let { " · $it" } ?: ""))
                     } else {
                         LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp))
                     }
