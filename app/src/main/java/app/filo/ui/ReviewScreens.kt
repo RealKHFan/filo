@@ -342,65 +342,68 @@ fun ReviewListScreen(nav: NavController, kind: ReviewKind) {
             }
             return@Scaffold
         }
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize().padding(padding).dragToSelect(
-                state = drag,
-                keys = entries.map { it.path },
-                selection = selection,
-                onSelectionChange = { selection = it },
-                itemAt = { p -> listState.layoutInfo.visibleItemsInfo.firstOrNull { p.y >= it.offset && p.y < it.offset + it.size }?.key as? String },
-                scrollBy = { listState.scrollBy(it) },
-            ),
-            contentPadding = PaddingValues(bottom = 24.dp),
-        ) {
-            item {
-                Text(
-                    "Tap to select, or touch and hold and drag over several. Tap a thumbnail or ⋮ to look at a file first. Deleted files stay in Trash for 30 days.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                )
-            }
-            if (kind == ReviewKind.DUPLICATES) {
-                result.duplicates.forEach { group ->
-                    item(key = "header:" + group.files.first().path) {
-                        SectionHeader(
-                            "${group.files.size} copies · ${formatSize(group.size)} each",
-                            Modifier.padding(horizontal = 16.dp),
-                        )
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.dragToSelect(
+                    state = drag,
+                    keys = entries.map { it.path },
+                    selection = selection,
+                    onSelectionChange = { selection = it },
+                    itemAt = { p -> listState.layoutInfo.visibleItemsInfo.firstOrNull { p.y >= it.offset && p.y < it.offset + it.size }?.key as? String },
+                    scrollBy = { listState.scrollBy(it) },
+                ),
+                contentPadding = PaddingValues(bottom = 24.dp),
+            ) {
+                item {
+                    Text(
+                        "Tap to select, or touch and hold and drag over several. Tap a thumbnail or ⋮ to look at a file first. Deleted files stay in Trash for 30 days.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+                }
+                if (kind == ReviewKind.DUPLICATES) {
+                    result.duplicates.forEach { group ->
+                        item(key = "header:" + group.files.first().path) {
+                            SectionHeader(
+                                "${group.files.size} copies · ${formatSize(group.size)} each",
+                                Modifier.padding(horizontal = 16.dp),
+                            )
+                        }
+                        items(group.files, key = { it.path }) { entry ->
+                            FileRow(
+                                entry,
+                                selected = entry.path in selection,
+                                selectionMode = false,
+                                favorite = entry.path in favorites,
+                                onClick = { if (!drag.consumeClick()) toggle(entry) },
+                                onLongClick = { toggle(entry) },
+                                onMore = { sheetFor = entry },
+                                onThumbClick = { open(entry) },
+                                longPressFromParent = true,
+                                selectedMark = true,
+                            )
+                        }
                     }
-                    items(group.files, key = { it.path }) { entry ->
+                } else {
+                    items(entries, key = { it.path }) { entry ->
                         FileRow(
-                            entry,
-                            selected = entry.path in selection,
-                            selectionMode = false,
-                            favorite = entry.path in favorites,
-                            onClick = { if (!drag.consumeClick()) toggle(entry) },
-                            onLongClick = { toggle(entry) },
-                            onMore = { sheetFor = entry },
-                            onThumbClick = { open(entry) },
-                            longPressFromParent = true,
-                            selectedMark = true,
-                        )
+                                entry,
+                                selected = entry.path in selection,
+                                selectionMode = false,
+                                favorite = entry.path in favorites,
+                                onClick = { if (!drag.consumeClick()) toggle(entry) },
+                                onLongClick = { toggle(entry) },
+                                onMore = { sheetFor = entry },
+                                onThumbClick = { open(entry) },
+                                longPressFromParent = true,
+                                selectedMark = true,
+                            )
                     }
                 }
-            } else {
-                items(entries, key = { it.path }) { entry ->
-                    FileRow(
-                            entry,
-                            selected = entry.path in selection,
-                            selectionMode = false,
-                            favorite = entry.path in favorites,
-                            onClick = { if (!drag.consumeClick()) toggle(entry) },
-                            onLongClick = { toggle(entry) },
-                            onMore = { sheetFor = entry },
-                            onThumbClick = { open(entry) },
-                            longPressFromParent = true,
-                            selectedMark = true,
-                        )
-                }
             }
+            FastScroller(listState)
         }
     }
 

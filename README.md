@@ -31,9 +31,11 @@ The ☰ menu holds Favorites, Hidden folder, Network (when switched on), Setting
 - Open, App info, Uninstall (Android asks to confirm), and Save APK to Download as a backup
 - A second tab lists the `.apk` installer files in your storage
 - Settings: show system apps, and optionally full sizes (app + data + cache). Full sizes need Android's Usage access, which you switch on yourself in the Android page Filo opens. Filo never asks with a pop-up.
+  - If that switch is grey ("Controlled by restricted setting"), Android is blocking it because Filo was installed from an APK file. Tap the grey switch once, then go to Filo's App info, tap ⋮ at the top right and choose **Allow restricted settings**. Now the Usage access switch works. Filo's Settings has buttons for both pages.
 
 **Files**
 - Two list sizes and four grid sizes: pinch out for bigger, pinch in for smaller
+- Long lists get a handle on the right edge while you scroll: drag it to jump through hundreds of files at once
 - View size and sort order are remembered **per folder** (photo folders start as a grid)
 - Long-press and drag across files to select many at once; copy, move (with a Paste bar), rename, share, open with, file info
 - Drag and drop: long-press a selected file and drag the selection onto a folder or a part of the path bar to move it there. Hold still over one for 2 seconds and it opens, so you can keep going deeper or back up, then let go. Undo right after.
@@ -73,7 +75,7 @@ The ☰ menu holds Favorites, Hidden folder, Network (when switched on), Setting
 
 ## Install
 
-1. Download `Filo-1.6.3.apk` from the [Releases](../../releases) page on your phone.
+1. Download `Filo-1.7.0.apk` from the [Releases](../../releases) page on your phone.
 2. Open it. If asked, allow your browser or file app to install unknown apps.
 3. Open Filo and tap **Allow access**, then turn on **Allow access to manage all files**. (A full file manager needs this.)
 
@@ -83,7 +85,7 @@ Every release is signed with the same key. Its certificate SHA-256 is:
 ae00316ca87ff8a5bc80de8f5a3531d029a66576d22f8c3bb18c3b6794503a32
 ```
 
-To check a downloaded APK: `apksigner verify --print-certs Filo-1.6.3.apk`. Android also refuses an update signed with a different key.
+To check a downloaded APK: `apksigner verify --print-certs Filo-1.7.0.apk`. Android also refuses an update signed with a different key.
 
 To tap `.apk` files inside Filo and install them, Android will ask once to let Filo install apps.
 
@@ -92,7 +94,7 @@ To tap `.apk` files inside Filo and install them, Android will ask once to let F
 Requirements: JDK 17+ and the Android SDK (platform 36).
 
 ```bash
-./gradlew testDebugUnitTest   # 100 tests: file operations, trash, zip, Review, search, encryption, hidden folders, PIN lockout, auto-lock, file servers, UI
+./gradlew testDebugUnitTest   # 106 tests: file operations, trash, zip, Review, search, encryption, hidden folders, PIN lockout, auto-lock, file servers, UI
 ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
 ```
 

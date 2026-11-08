@@ -158,16 +158,22 @@ fun openAppInfo(context: Context) {
 @Composable
 fun rememberNetworkAllowed(): Boolean {
     val graph = LocalGraph.current
+    return rememberCheckedOnResume { graph.networkPermission.granted() }
+}
+
+/** Something you change in Android's settings, checked again every time Filo comes back to the front. */
+@Composable
+fun rememberCheckedOnResume(check: () -> Boolean): Boolean {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    var allowed by remember { mutableStateOf(graph.networkPermission.granted()) }
+    var value by remember { mutableStateOf(check()) }
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) allowed = graph.networkPermission.granted()
+            if (event == Lifecycle.Event.ON_RESUME) value = check()
         }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
-    return allowed
+    return value
 }
 
 /** Android has no pop-up for the Network permission, so Filo explains it and opens the right page. */

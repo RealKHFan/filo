@@ -1,6 +1,7 @@
 package app.filo.ui
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -105,6 +106,7 @@ private fun InstalledApps(nav: NavController, tabs: @Composable () -> Unit) {
         }
     }
     val fullSizes = settings.fullAppSizes && graph.apps.hasUsageAccess()
+    val appList = androidx.compose.foundation.lazy.rememberLazyListState()
 
     Scaffold(
         topBar = {
@@ -135,43 +137,46 @@ private fun InstalledApps(nav: NavController, tabs: @Composable () -> Unit) {
             when {
                 list == null -> Loading()
                 list.isEmpty() -> EmptyState(Icons.Outlined.Android, "No apps found", "Apps you install show up here.")
-                else -> LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-                    item {
-                        Surface(
-                            shape = RoundedCornerShape(20.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainer,
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                        ) {
-                            Column(Modifier.padding(16.dp)) {
-                                Text(
-                                    "${list.size} ${if (list.size == 1) "app" else "apps"} · ${formatSize(list.sumOf { it.shownSize })}",
-                                    style = MaterialTheme.typography.titleMedium,
-                                )
-                                Text(
-                                    if (fullSizes) "Sizes include app data and cache." else "Sizes show the app itself. Full sizes with data can be turned on in Settings.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                else -> Box(Modifier.fillMaxSize()) {
+                    LazyColumn(state = appList, contentPadding = PaddingValues(bottom = 24.dp)) {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainer,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                            ) {
+                                Column(Modifier.padding(16.dp)) {
+                                    Text(
+                                        "${list.size} ${if (list.size == 1) "app" else "apps"} · ${formatSize(list.sumOf { it.shownSize })}",
+                                        style = MaterialTheme.typography.titleMedium,
+                                    )
+                                    Text(
+                                        if (fullSizes) "Sizes include app data and cache." else "Sizes show the app itself. Full sizes with data can be turned on in Settings.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                         }
+                        items(list, key = { it.packageName }) { app ->
+                            ListItem(
+                                leadingContent = { AppIcon(app.packageName, 44.dp) },
+                                headlineContent = { Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                supportingContent = {
+                                    Text(
+                                        listOfNotNull(formatSize(app.shownSize), app.versionName.takeIf { it.isNotBlank() }?.let { "Version $it" }, if (app.isSystem) "System" else null)
+                                            .joinToString(" · "),
+                                        maxLines = 1,
+                                    )
+                                },
+                                trailingContent = {
+                                    IconButton(onClick = { sheetFor = app }) { Icon(Icons.Outlined.MoreVert, "Options for ${app.label}") }
+                                },
+                                modifier = Modifier.clickableRow { sheetFor = app },
+                            )
+                        }
                     }
-                    items(list, key = { it.packageName }) { app ->
-                        ListItem(
-                            leadingContent = { AppIcon(app.packageName, 44.dp) },
-                            headlineContent = { Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            supportingContent = {
-                                Text(
-                                    listOfNotNull(formatSize(app.shownSize), app.versionName.takeIf { it.isNotBlank() }?.let { "Version $it" }, if (app.isSystem) "System" else null)
-                                        .joinToString(" · "),
-                                    maxLines = 1,
-                                )
-                            },
-                            trailingContent = {
-                                IconButton(onClick = { sheetFor = app }) { Icon(Icons.Outlined.MoreVert, "Options for ${app.label}") }
-                            },
-                            modifier = Modifier.clickableRow { sheetFor = app },
-                        )
-                    }
+                    FastScroller(appList)
                 }
             }
         }

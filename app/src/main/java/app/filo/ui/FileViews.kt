@@ -418,5 +418,6 @@ fun FileListPane(
                 }
             }
         }
+        FastScroller(if (level.isGrid) gridState else listState, bottom = contentPadding.calculateBottomPadding())
     }
 }

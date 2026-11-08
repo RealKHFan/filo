@@ -169,54 +169,57 @@ fun TrashScreen(active: Boolean = true) {
             when {
                 items == null -> Loading()
                 list.isEmpty() -> EmptyState(Icons.Outlined.DeleteOutline, "Trash is empty", "Files you delete stay here for 30 days, so you can bring them back.")
-                else -> LazyColumn(
-                    state = trashList,
-                    contentPadding = PaddingValues(bottom = 24.dp),
-                    modifier = Modifier.dragToSelect(
-                        state = trashDrag,
-                        keys = list.map { it.id },
-                        selection = selection,
-                        onSelectionChange = { selection = it },
-                        itemAt = { p -> trashList.layoutInfo.visibleItemsInfo.firstOrNull { p.y >= it.offset && p.y < it.offset + it.size }?.key as? String },
-                        scrollBy = { trashList.scrollBy(it) },
-                    ),
-                ) {
-                    item {
-                        Surface(
-                            shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainer,
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                        ) {
-                            Column(Modifier.padding(16.dp)) {
-                                Text("${itemCount(list.size)} · ${formatSize(list.sumOf { it.size })}", style = MaterialTheme.typography.titleMedium)
-                                Text(
-                                    "Deleted files are kept for 30 days, then removed for good.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                else -> Box(Modifier.fillMaxSize()) {
+                    LazyColumn(
+                        state = trashList,
+                        contentPadding = PaddingValues(bottom = 24.dp),
+                        modifier = Modifier.dragToSelect(
+                            state = trashDrag,
+                            keys = list.map { it.id },
+                            selection = selection,
+                            onSelectionChange = { selection = it },
+                            itemAt = { p -> trashList.layoutInfo.visibleItemsInfo.firstOrNull { p.y >= it.offset && p.y < it.offset + it.size }?.key as? String },
+                            scrollBy = { trashList.scrollBy(it) },
+                        ),
+                    ) {
+                        item {
+                            Surface(
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainer,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                            ) {
+                                Column(Modifier.padding(16.dp)) {
+                                    Text("${itemCount(list.size)} · ${formatSize(list.sumOf { it.size })}", style = MaterialTheme.typography.titleMedium)
+                                    Text(
+                                        "Deleted files are kept for 30 days, then removed for good.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                         }
+                        items(list, key = { it.id }) { item ->
+                            val days = graph.trash.daysLeft(item)
+                            FileRow(
+                                entry = item.asEntry(graph),
+                                selected = item.id in selection,
+                                selectionMode = selection.isNotEmpty(),
+                                favorite = false,
+                                onClick = {
+                                    when {
+                                        trashDrag.consumeClick() -> Unit
+                                        selection.isNotEmpty() -> toggle(item)
+                                        else -> sheetFor = item
+                                    }
+                                },
+                                longPressFromParent = true,
+                                onLongClick = { toggle(item) },
+                                onMore = { sheetFor = item },
+                                subtitle = "${formatSize(item.size)} · ${if (days == 1) "1 day" else "$days days"} left · from ${from(item)}",
+                            )
+                        }
                     }
-                    items(list, key = { it.id }) { item ->
-                        val days = graph.trash.daysLeft(item)
-                        FileRow(
-                            entry = item.asEntry(graph),
-                            selected = item.id in selection,
-                            selectionMode = selection.isNotEmpty(),
-                            favorite = false,
-                            onClick = {
-                                when {
-                                    trashDrag.consumeClick() -> Unit
-                                    selection.isNotEmpty() -> toggle(item)
-                                    else -> sheetFor = item
-                                }
-                            },
-                            longPressFromParent = true,
-                            onLongClick = { toggle(item) },
-                            onMore = { sheetFor = item },
-                            subtitle = "${formatSize(item.size)} · ${if (days == 1) "1 day" else "$days days"} left · from ${from(item)}",
-                        )
-                    }
+                    FastScroller(trashList)
                 }
             }
         }
@@ -314,19 +317,26 @@ fun SettingsScreen(nav: NavController) {
             SwitchRow("Show system apps", "Include apps that came with the phone", settings.showSystemApps) { on ->
                 graph.settings.update { it.copy(showSystemApps = on) }
             }
-            val changes by graph.actions.changes.collectAsStateWithLifecycle()
-            val usageAccess = remember(changes, settings.fullAppSizes) { graph.apps.hasUsageAccess() }
+            val usageAccess = rememberCheckedOnResume { graph.apps.hasUsageAccess() }
             SwitchRow(
                 "Show full app sizes",
                 when {
                     !settings.fullAppSizes -> "Off: only the app itself is counted. Turning this on opens Android's Usage access page, where you decide. Filo never asks with a pop-up."
-                    !usageAccess -> "Waiting for Usage access. Allow Filo in Android's Usage access page to count app data and cache."
+                    !usageAccess -> "Waiting for Usage access. If Filo's switch there is grey (“Controlled by restricted setting”): " +
+                        "tap it once, then open App info, tap ⋮ at the top right and choose Allow restricted settings. Then switch Usage access on."
                     else -> "App, data and cache are counted."
                 },
                 settings.fullAppSizes,
             ) { on ->
                 graph.settings.update { it.copy(fullAppSizes = on) }
                 if (on && !graph.apps.hasUsageAccess()) app.filo.data.AppActions.openUsageAccessSettings(context)
+            }
+            if (settings.fullAppSizes && !usageAccess) {
+                // Android blocks Usage access for apps installed from a file until you allow it in App info.
+                Row(Modifier.padding(start = 8.dp, bottom = 4.dp)) {
+                    TextButton(onClick = { app.filo.data.AppActions.openUsageAccessSettings(context) }) { Text("Usage access") }
+                    TextButton(onClick = { openAppInfo(context) }) { Text("App info") }
+                }
             }
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))

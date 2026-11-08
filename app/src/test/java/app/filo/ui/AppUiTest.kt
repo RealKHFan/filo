@@ -603,7 +603,7 @@ class AppUiTest {
         listOf("Favorites", "Hidden folder").forEach { compose.onAllNodes(hasText(it) and hasClickAction()).assertCountEquals(2) }
         shot("17_menu")
         clickable("About").performClick()
-        waitFor("Version 1.6.3")
+        waitFor("Version 1.7.0")
         shot("18_about")
     }
 
@@ -623,6 +623,14 @@ class AppUiTest {
         assertTrue(graph.settings.state.value.showSystemApps)
         compose.onNode(hasScrollAction()).performScrollToNode(hasText("Show full app sizes"))
         waitFor("never asks with a pop-up", substring = true)
+        // Turned on without Usage access (Android blocks it for apps installed from a file): the way out is shown.
+        clickable("Show full app sizes").performClick()
+        assertTrue(graph.settings.state.value.fullAppSizes)
+        waitFor("Controlled by restricted setting", substring = true)
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText("App info"))
+        clickable("App info").assertExists()
+        clickable("Usage access").assertExists()
+        shot("19b_settings_usage_access")
         compose.onNode(hasScrollAction()).performScrollToNode(hasText("Show hidden files"))
         clickable("Show hidden files").performClick()
         assertTrue(graph.settings.state.value.showHidden)
