@@ -59,8 +59,16 @@ The ☰ menu holds Favorites, Hidden folder, Network (when switched on), Setting
 - 5 wrong PINs, then waits of 30 s, 1 min, 2 min… up to 1 hour
 - Locks as soon as you go back out of it, and after 5 seconds in another app or with the screen off (adjustable in Settings: immediately, 5, 15, 30 seconds or 1 minute)
 - Screenshots and the recent-apps preview are blocked while it's open
-- ⚠️ **If you forget the PIN or uninstall Filo, the hidden files are gone for good.** Nobody can recover them. Move files out before uninstalling.
 - Pictures are shown decrypted in memory only. Other file types (videos, PDFs) are decrypted to Filo's private cache to open in another app, and those copies are deleted the next time the hidden folder is unlocked or locked.
+- ⚠️ **If you forget the PIN or uninstall Filo, the hidden files are gone for good.** Nobody can recover them. Move files out before uninstalling, or make a backup (below).
+
+**Moving to another phone**
+- In the hidden folder, tap ⋮ → **Back up for another phone**. You choose a password: at least 12 characters, and Filo refuses easy ones (like `password1234`). Write it down; without it nobody can open the backup, not even you.
+- Filo saves one file in Download, such as `Filo backup 2026-11-12.filo`. Copy it to the other phone however you like: USB cable, SD card, USB stick or your file server.
+- On the other phone, tap the file in Filo (or use ⋮ → **Import backup** inside the hidden folder). A phone without a hidden folder sets one up first, with its own PIN. Then enter the backup password.
+- The backup holds every hidden file and folder, plus Filo's settings, list/grid and sort per folder, favorites and saved file servers (passwords included). Your PIN and fingerprint stay on each phone.
+- Back and forth works: importing adds only what's new and skips files that are already there. Deleting a file on one phone doesn't delete it on the other.
+- How it's protected: your password goes through Argon2id (64 MB of memory, 3 passes), which makes guessing slow and expensive even with graphics cards. Everything inside, including names, is encrypted with AES-256-GCM in chunks, so any change or a cut-off file is noticed.
 
 **Network (file servers)**: off until you switch it on in Settings
 - SMB 2/3 (Windows shares, Samba, NAS boxes; encrypted when the server supports it), FTP and FTPS
@@ -75,7 +83,7 @@ The ☰ menu holds Favorites, Hidden folder, Network (when switched on), Setting
 
 ## Install
 
-1. Download `Filo-1.7.0.apk` from the [Releases](../../releases) page on your phone.
+1. Download `Filo-1.8.0.apk` from the [Releases](../../releases) page on your phone.
 2. Open it. If asked, allow your browser or file app to install unknown apps.
 3. Open Filo and tap **Allow access**, then turn on **Allow access to manage all files**. (A full file manager needs this.)
 
@@ -85,7 +93,7 @@ Every release is signed with the same key. Its certificate SHA-256 is:
 ae00316ca87ff8a5bc80de8f5a3531d029a66576d22f8c3bb18c3b6794503a32
 ```
 
-To check a downloaded APK: `apksigner verify --print-certs Filo-1.7.0.apk`. Android also refuses an update signed with a different key.
+To check a downloaded APK: `apksigner verify --print-certs Filo-1.8.0.apk`. Android also refuses an update signed with a different key.
 
 To tap `.apk` files inside Filo and install them, Android will ask once to let Filo install apps.
 
@@ -94,7 +102,7 @@ To tap `.apk` files inside Filo and install them, Android will ask once to let F
 Requirements: JDK 17+ and the Android SDK (platform 36).
 
 ```bash
-./gradlew testDebugUnitTest   # 106 tests: file operations, trash, zip, Review, search, encryption, hidden folders, PIN lockout, auto-lock, file servers, UI
+./gradlew testDebugUnitTest   # 119 tests: file operations, trash, zip, Review, search, encryption, hidden folders, backups, PIN lockout, auto-lock, file servers, UI
 ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -123,7 +131,7 @@ Filo is free software: you can redistribute it and/or modify it under the terms 
 
 The bundled font, [Plus Jakarta Sans](https://github.com/tokotype/PlusJakartaSans) by Tokotype, is under the SIL Open Font License 1.1 ([licenses/PlusJakartaSans-OFL.txt](licenses/PlusJakartaSans-OFL.txt)).
 
-File servers use [smbj](https://github.com/hierynomus/smbj) (Apache 2.0), [smbj-rpc](https://github.com/rapid7/smbj-rpc) (BSD 3-Clause), [Apache Commons Net](https://commons.apache.org/proper/commons-net/) (Apache 2.0) and [Bouncy Castle](https://www.bouncycastle.org) (MIT). All libraries and their licenses are listed in the app under About → Open source libraries.
+File servers use [smbj](https://github.com/hierynomus/smbj) (Apache 2.0), [smbj-rpc](https://github.com/rapid7/smbj-rpc) (BSD 3-Clause) and [Apache Commons Net](https://commons.apache.org/proper/commons-net/) (Apache 2.0). [Bouncy Castle](https://www.bouncycastle.org) (MIT) is used by smbj and for the backup password (Argon2id). All libraries and their licenses are listed in the app under About → Open source libraries.
 
 ## Credits
 

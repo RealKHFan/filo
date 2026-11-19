@@ -23,7 +23,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import app.filo.vault.BackupFile
+import app.filo.vault.BackupSource
+import app.filo.vault.DamagedBackupException
+import app.filo.vault.OpenedBackup
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 
 /** A running task, shown as a progress dialog. progress == null means "unknown". */
 data class Operation(val title: String, val progress: Float?, val detail: String? = null)
@@ -88,15 +94,16 @@ class FileActions(private val context: Context, private val graph: Graph) {
         _changes.value++
     }
 
+    /** Runs [block] as the one task shown with progress; false if another task is still running. */
     private fun run(
         title: String,
         totalBytes: Long = 0,
         measure: (suspend () -> Long)? = null,
         block: suspend (onBytes: (Long) -> Unit, isCancelled: () -> Boolean) -> UserMessage?,
-    ) {
+    ): Boolean {
         if (job?.isActive == true) {
             notify("Wait until the current task is done")
-            return
+            return false
         }
         job = scope.launch {
             _operation.value = Operation(title, if (totalBytes > 0 || measure != null) 0f else null)
@@ -129,6 +136,7 @@ class FileActions(private val context: Context, private val graph: Graph) {
                 _changes.value++
             }
         }
+        return true
     }
 
     private fun items(n: Int) = if (n == 1) "1 item" else "$n items"
@@ -328,6 +336,66 @@ class FileActions(private val context: Context, private val graph: Graph) {
             withContext(Dispatchers.Main) { onDone() }
             UserMessage("Moved ${items(sources.size)} to the hidden folder")
         }
+    }
+
+    // ---- Backups of the hidden folder, for moving to another phone ----
+
+    /** A backup waiting until the hidden folder is unlocked (or set up first, on a new phone). */
+    val pendingImport = MutableStateFlow<BackupSource?>(null)
+
+    private fun files(n: Int) = if (n == 1) "1 file" else "$n files"
+
+    /** Writes the hidden folder and Filo's settings into a password-protected file in Download. */
+    fun exportBackup(password: String, onShow: (File) -> Unit) {
+        val vault = graph.vault
+        val dest = graph.downloadsDir
+        val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        run("Backing up hidden folder", measure = { vault.items.value.sumOf { it.size } }) { onBytes, cancelled ->
+            val extras = AppBackup.collect(graph)
+            val total = vault.items.value.sumOf { it.size }
+            if (!dest.isDirectory && !dest.mkdirs()) throw IOException("Couldn't open the Download folder")
+            if (dest.usableSpace < total + 50_000_000L) throw IOException("Not enough free space: the backup needs about ${FileOps.formatSize(total)}")
+            val target = FileOps.uniqueTarget(dest, "Filo backup $day.${BackupFile.EXTENSION}")
+            val written = try {
+                FileOutputStream(target).use { file ->
+                    val buffered = file.buffered(256 * 1024)
+                    val result = BackupFile.create(buffered, password).use { vault.writeBackup(it, extras, onBytes, cancelled) }
+                    buffered.flush()
+                    file.fd.sync() // all the way on the disk before you carry it to another phone
+                    result
+                }
+            } catch (e: Throwable) {
+                target.delete()
+                throw e
+            }
+            Opener.notifyMedia(context, listOf(target.absolutePath))
+            val damaged = if (written.damaged.isEmpty()) "" else
+                ". Already damaged on this phone, so not included: ${written.damaged.joinToString()}"
+            UserMessage("Backed up ${files(written.files)} to Download/${target.name}$damaged", "Show") { onShow(target) }
+        }
+    }
+
+    /** Adds a backup's hidden files (skipping ones already here) and takes over its settings. */
+    fun importBackup(backup: OpenedBackup) {
+        val started = run("Importing backup", totalBytes = backup.size.coerceAtLeast(0)) { onBytes, cancelled ->
+            backup.use {
+                it.onBytes = onBytes
+                if (backup.size > 0 && context.filesDir.usableSpace < backup.size + 100_000_000L) {
+                    throw IOException("Not enough free space: the backup needs about ${FileOps.formatSize(backup.size)}")
+                }
+                val result = try {
+                    graph.vault.readBackup(it.content, cancelled)
+                } catch (e: DamagedBackupException) {
+                    throw IOException("${e.message}. The files read before that were kept.")
+                }
+                AppBackup.apply(graph, result.extras)
+                val skipped = if (result.skipped > 0) " (${files(result.skipped)} were already here)" else ""
+                UserMessage(
+                    if (result.added == 0 && result.skipped > 0) "Everything in this backup is already here" else "Imported ${files(result.added)}$skipped",
+                )
+            }
+        }
+        if (!started) backup.close()
     }
 
     /** Moves hidden files and folders back to normal storage (where they came from, or Download). */

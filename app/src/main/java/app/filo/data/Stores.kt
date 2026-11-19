@@ -21,6 +21,9 @@ data class Settings(
     val networkServers: Boolean = false,
 )
 
+/** The choices Settings offers for locking the hidden folder, in seconds (0 = immediately). */
+val AUTO_LOCK_CHOICES = listOf(0, 5, 15, 30, 60)
+
 class SettingsStore(private val prefs: SharedPreferences) {
     private val _state = MutableStateFlow(read())
     val state: StateFlow<Settings> = _state.asStateFlow()
@@ -75,6 +78,8 @@ class FavoritesStore(private val prefs: SharedPreferences) {
     }
 
     fun remove(paths: Collection<String>) = save(_paths.value - paths.toSet())
+
+    fun add(paths: Collection<String>) = save(_paths.value + paths)
 
     private fun save(set: Set<String>) {
         prefs.edit { putStringSet("favorites", set) }

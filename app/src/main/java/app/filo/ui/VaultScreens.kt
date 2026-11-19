@@ -6,6 +6,10 @@ import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.outlined.Backup
+import androidx.compose.material.icons.outlined.Restore
 import androidx.exifinterface.media.ExifInterface
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.view.WindowManager
@@ -392,6 +396,7 @@ fun VaultScreen(nav: NavController) {
     val setUp by graph.vault.setUp.collectAsStateWithLifecycle()
     val unlocked by graph.vault.unlocked.collectAsStateWithLifecycle()
     val pending by graph.actions.pendingVault.collectAsStateWithLifecycle()
+    val importing by graph.actions.pendingImport.collectAsStateWithLifecycle()
     var justCreated by remember { mutableStateOf(false) }
     SecureWindow()
     if (setUp && unlocked) {
@@ -408,9 +413,15 @@ fun VaultScreen(nav: NavController) {
         },
     ) { padding ->
         Column(Modifier.padding(padding)) {
-            if (pending.isNotEmpty()) {
+            val waiting = when {
+                pending.isNotEmpty() -> "Unlock to hide ${itemCount(pending.size)}"
+                importing != null && setUp -> "Unlock to import ${importing?.name}"
+                importing != null -> "Create a PIN for this phone first, then the backup is imported"
+                else -> null
+            }
+            if (waiting != null) {
                 Text(
-                    "Unlock to hide ${itemCount(pending.size)}",
+                    waiting,
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     textAlign = TextAlign.Center,
@@ -751,6 +762,8 @@ private fun VaultContent(nav: NavController, offerFingerprint: Boolean, onOfferD
     val folders by vault.folders.collectAsStateWithLifecycle()
     val folder by vault.openFolder.collectAsStateWithLifecycle()
     val pending by actions.pendingVault.collectAsStateWithLifecycle()
+    val importing by actions.pendingImport.collectAsStateWithLifecycle()
+    val operation by actions.operation.collectAsStateWithLifecycle()
     val views by graph.views.all.collectAsStateWithLifecycle()
     val settings by graph.settings.state.collectAsStateWithLifecycle()
     val viewKey = remember(folder) { vault.viewKey(folder) }
@@ -767,6 +780,11 @@ private fun VaultContent(nav: NavController, offerFingerprint: Boolean, onOfferD
     var newFolder by remember { mutableStateOf(false) }
     var moving by remember { mutableStateOf<List<String>?>(null) }
     var deleting by remember { mutableStateOf<List<String>?>(null) }
+    var exporting by remember { mutableStateOf(false) }
+    // Android's picker leaves Filo, so the folder may lock meanwhile; the backup waits until it's unlocked again.
+    val pickBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) actions.pendingImport.value = backupSourceOf(context, uri)
+    }
 
     val byId = remember(items) { items.associateBy { it.id } }
     val currentById by rememberUpdatedState(byId)
@@ -912,6 +930,22 @@ private fun VaultContent(nav: NavController, offerFingerprint: Boolean, onOfferD
                                     onClick = {
                                         menu = false
                                         changePin = true
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Back up for another phone") },
+                                    leadingIcon = { Icon(Icons.Outlined.Backup, null) },
+                                    onClick = {
+                                        menu = false
+                                        exporting = true
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Import backup") },
+                                    leadingIcon = { Icon(Icons.Outlined.Restore, null) },
+                                    onClick = {
+                                        menu = false
+                                        pickBackup.launch(arrayOf("*/*"))
                                     },
                                 )
                             }
@@ -1070,6 +1104,17 @@ private fun VaultContent(nav: NavController, offerFingerprint: Boolean, onOfferD
 
     if (changePin) ChangePinDialog { changePin = false }
     if (offerFingerprint) FingerprintOfferDialog(onEnabled = { fingerprintOn = true }, onDone = onOfferDone)
+    if (exporting) {
+        ExportBackupDialog(items.size, items.sumOf { it.size }, onDismiss = { exporting = false }) { password ->
+            actions.exportBackup(password) { file ->
+                // Out of the hidden folder (which locks it), not on top of it.
+                nav.navigate(Routes.folder(file.parent!!, highlight = file.absolutePath)) { popUpTo(Routes.VAULT) { inclusive = true } }
+            }
+        }
+    }
+    importing?.let { source ->
+        if (!offerFingerprint && operation == null) ImportBackupDialog(source, actions, onDismiss = { actions.pendingImport.value = null })
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

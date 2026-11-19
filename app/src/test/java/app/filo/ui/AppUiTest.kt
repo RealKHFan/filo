@@ -17,6 +17,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.geometry.lerp
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.pinch
@@ -603,7 +604,7 @@ class AppUiTest {
         listOf("Favorites", "Hidden folder").forEach { compose.onAllNodes(hasText(it) and hasClickAction()).assertCountEquals(2) }
         shot("17_menu")
         clickable("About").performClick()
-        waitFor("Version 1.7.0")
+        waitFor("Version 1.8.0")
         shot("18_about")
     }
 
@@ -693,6 +694,66 @@ class AppUiTest {
         described("Move out of hidden folder").performClick()
         compose.waitUntil(10_000) { graph.vault.items.value.isEmpty() && File(root, "Pictures/Screenshots/Screenshot_20261019.png").exists() }
         assertTrue("hidden files inside come back too", File(root, "Pictures/.thumbnails/thumb1.jpg").exists())
+    }
+
+    // Small screen: see actionSheetRenameNewFolderCopyPaste.
+    @Config(qualifiers = "w320dp-h470dp-mdpi")
+    @Test fun backUpHiddenFolderAndImportItOnANewPhone() {
+        graph.vault.setup("123456")
+        graph.vault.createFolder("", "Trips")
+        graph.vault.hide(listOf(File(root, "Documents/Notes.txt")), into = "Trips")
+        graph.settings.update { it.copy(showHidden = true) }
+        show()
+        graph.vault.unlockWithPin("123456")
+        described("Open menu").performClick()
+        clickable("Hidden folder").performClick()
+        waitFor("Trips")
+
+        described("More options").performClick()
+        clickable("Back up for another phone").performClick()
+        waitFor("Back up hidden folder")
+        val fields = compose.onAllNodes(hasSetTextAction())
+        fields[0].performTextInput("password1234")
+        waitFor("Strength: Too easy to guess")
+        clickable("Back up").assertIsNotEnabled()
+        fields[0].performTextClearance()
+        fields[0].performTextInput("velvet-otter-cactus-91")
+        fields[1].performTextInput("velvet-otter-cactus-91")
+        waitFor("Strength: Very strong")
+        shot("70_backup_password")
+        clickable("Back up").performClick()
+        waitFor("Backed up 1 file", substring = true)
+        val backup = File(root, "Download").listFiles()!!.single { it.name.endsWith(".filo") }
+        assertFalse("nothing readable inside", String(backup.readBytes(), Charsets.ISO_8859_1).contains("Notes"))
+
+        clickable("Show").performClick() // straight to the file in Download
+        waitFor(backup.name)
+        assertFalse("leaving the hidden folder locked it", graph.vault.unlocked.value)
+
+        // The new phone: no hidden folder yet, Filo settings at their defaults.
+        graph.vault.erase()
+        graph.settings.update { it.copy(showHidden = false) }
+        clickable(backup.name).performClick()
+        waitFor("Create a PIN for this phone first", substring = true)
+        typePin("123123") // the keys this small test screen shows
+        typePin("123123")
+        if (canUseFingerprint(compose.activity)) { // offered first, then the import
+            waitFor("Not now")
+            clickable("Not now").performClick()
+        }
+        waitFor("Import backup")
+        compose.onNode(hasSetTextAction()).performTextInput("velvet-otter-cactus-92")
+        clickable("Import").performClick()
+        waitFor("Wrong password")
+        shot("71_import_wrong_password")
+        compose.onNode(hasSetTextAction()).performTextClearance()
+        compose.onNode(hasSetTextAction()).performTextInput("velvet-otter-cactus-91")
+        clickable("Import").performClick()
+        waitFor("Imported 1 file")
+        assertEquals(listOf("Trips/Notes.txt"), graph.vault.items.value.map { "${it.folder}/${it.name}" })
+        assertTrue("settings came along", graph.settings.state.value.showHidden)
+        waitFor("Trips")
+        shot("72_imported")
     }
 
     // Small screen: see actionSheetRenameNewFolderCopyPaste.

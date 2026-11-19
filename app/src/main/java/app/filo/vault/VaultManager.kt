@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.io.EOFException
 import java.io.File
 import java.io.FileOutputStream
 import java.io.FilterInputStream
@@ -19,6 +22,7 @@ import java.security.SecureRandom
 import java.util.Base64
 import java.util.Properties
 import java.util.UUID
+import java.util.concurrent.CancellationException
 import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.Mac
@@ -72,6 +76,9 @@ class VaultManager(
         private const val MAX_LOCKOUT = 60 * 60 * 1000L
 
         fun isValidPin(pin: String) = pin.length == PIN_LENGTH && pin.all { it in '0'..'9' }
+
+        /** Item ids are UUIDs; a backup may only bring those. */
+        private val BACKUP_ID = Regex("[0-9a-fA-F-]{8,64}")
 
         /** 30 s after the 5th wrong PIN, doubling each time, at most 1 hour. */
         fun lockoutDelay(failures: Int): Long {
@@ -575,6 +582,175 @@ class VaultManager(
         File(blobDir, "${item.id}.bin").inputStream().buffered().use { input ->
             target.outputStream().buffered().use { output -> StreamCipher.decrypt(input, output, key) }
         }
+    }
+
+    // ---- Backups, for moving to another phone (see BackupFile) ----
+
+    class BackupWritten(val files: Int, val damaged: List<String>)
+
+    /**
+     * Writes everything in here into [out], an opened backup: the folder list, [extras] (Filo's other
+     * settings), then each file with its name and folder. Files go straight from one encryption to the
+     * other and never touch the disk unencrypted.
+     */
+    fun writeBackup(out: OutputStream, extras: Properties, onBytes: (Long) -> Unit = {}, isCancelled: () -> Boolean = { false }): BackupWritten {
+        val key = key()
+        val index = readIndex(key)
+        val data = DataOutputStream(out)
+        val head = Properties()
+        head.setProperty("format", "1")
+        index.folders.sorted().forEachIndexed { i, f -> head.setProperty("f.$i", f) }
+        index.origins.entries.forEachIndexed { i, (folder, path) ->
+            head.setProperty("o.$i.folder", folder)
+            head.setProperty("o.$i.path", path)
+        }
+        writeBlock(data, head)
+        writeBlock(data, extras)
+        val buffer = ByteArray(StreamCipher.CHUNK_SIZE)
+        val damaged = mutableListOf<String>()
+        var files = 0
+        for (item in index.items) {
+            val blob = File(blobDir, "${item.id}.bin")
+            if (!blob.isFile) {
+                damaged += item.name // already lost on this phone, nothing left to copy
+                continue
+            }
+            data.writeBoolean(true)
+            data.writeUTF(item.id)
+            data.writeUTF(item.name)
+            data.writeUTF(item.folder)
+            data.writeUTF(item.originalPath)
+            data.writeLong(item.addedAt)
+            data.writeLong(item.size)
+            blob.inputStream().buffered().use { raw ->
+                val plain = StreamCipher.Opener(raw, key)
+                while (true) {
+                    if (isCancelled()) throw CancellationException("Cancelled")
+                    val n = plain.read(buffer)
+                    if (n < 0) break
+                    data.writeInt(n)
+                    data.write(buffer, 0, n)
+                    onBytes(n.toLong())
+                }
+            }
+            data.writeInt(0)
+            files++
+        }
+        data.writeBoolean(false)
+        data.flush()
+        return BackupWritten(files, damaged)
+    }
+
+    class BackupRead(val added: Int, val skipped: Int, val extras: Properties)
+
+    /**
+     * Adds what's in a backup ([input], opened with BackupFile.open). Files already here (same file,
+     * or same name, size and folder) are skipped, so going back and forth between phones doesn't
+     * double anything. Every name and folder in the file is checked before it's used. If it stops
+     * halfway, the files read completely so far stay.
+     */
+    fun readBackup(input: InputStream, isCancelled: () -> Boolean = { false }): BackupRead {
+        val key = key()
+        val data = DataInputStream(input)
+        try {
+            val head = readBlock(data)
+            if (head.getProperty("format") != "1") throw IOException("This backup was made by a newer Filo. Update Filo first.")
+            val extras = readBlock(data)
+            val folders = numbered(head, "f.").onEach(::checkFolder)
+            val origins = numbered(head, "o.", ".folder").mapIndexed { i, f -> checkFolder(f).let { f to (head.getProperty("o.$i.path") ?: throw DamagedBackupException()) } }.toMap()
+            update(key) { idx ->
+                idx.copy(folders = idx.folders + folders.flatMap(::withParents), origins = origins + idx.origins)
+            }
+            val existing = readIndex(key).items
+            val ids = existing.mapTo(HashSet()) { it.id }
+            val same = existing.mapTo(HashSet()) { Triple(it.folder, it.name, it.size) }
+            val batch = mutableListOf<VaultItem>()
+            fun commit() {
+                if (batch.isEmpty()) return
+                val done = batch.toList()
+                batch.clear()
+                update(key) { idx -> idx.copy(items = idx.items + done, folders = idx.folders + done.flatMap { withParents(it.folder) }) }
+            }
+            var added = 0
+            var skipped = 0
+            var partial: File? = null
+            try {
+                while (data.readBoolean()) {
+                    val id = data.readUTF()
+                    val name = data.readUTF()
+                    val folder = data.readUTF()
+                    val origin = data.readUTF()
+                    val addedAt = data.readLong()
+                    val size = data.readLong()
+                    // The id becomes a file name here: only what Filo itself makes is accepted.
+                    if (!BACKUP_ID.matches(id) || !FileOps.isValidName(name)) throw DamagedBackupException()
+                    checkFolder(folder)
+                    if (id in ids || Triple(folder, name, size) in same) {
+                        copyChunks(data, null, isCancelled)
+                        skipped++
+                        continue
+                    }
+                    val blob = File(blobDir, "$id.bin")
+                    partial = blob
+                    var length = 0L
+                    writeSynced(blob) { out -> StreamCipher.Sealer(out, key).use { length = copyChunks(data, it, isCancelled) } }
+                    partial = null
+                    batch += VaultItem(id, name, length, addedAt, origin, folder)
+                    ids += id
+                    same += Triple(folder, name, size)
+                    added++
+                    if (batch.size >= 100) commit() // the list is rewritten as a whole, so not after every file
+                }
+                if (data.read() != -1) throw DamagedBackupException()
+            } catch (e: Throwable) {
+                partial?.delete()
+                runCatching { commit() }
+                throw e
+            }
+            commit()
+            return BackupRead(added, skipped, extras)
+        } catch (_: EOFException) {
+            throw DamagedBackupException()
+        } catch (_: java.io.UTFDataFormatException) {
+            throw DamagedBackupException()
+        } catch (_: GeneralSecurityException) {
+            throw DamagedBackupException()
+        }
+    }
+
+    /** One file's bytes from a backup, in pieces of at most one chunk, ending with an empty piece. */
+    private fun copyChunks(data: DataInputStream, out: OutputStream?, isCancelled: () -> Boolean): Long {
+        val buffer = ByteArray(StreamCipher.CHUNK_SIZE)
+        var total = 0L
+        while (true) {
+            if (isCancelled()) throw CancellationException("Cancelled")
+            val n = data.readInt()
+            if (n == 0) return total
+            if (n !in 1..StreamCipher.CHUNK_SIZE) throw DamagedBackupException()
+            data.readFully(buffer, 0, n)
+            out?.write(buffer, 0, n)
+            total += n
+        }
+    }
+
+    private fun checkFolder(folder: String) {
+        if (folder.isNotEmpty() && !folder.split('/').all(FileOps::isValidName)) throw DamagedBackupException()
+    }
+
+    private fun numbered(props: Properties, prefix: String, suffix: String = ""): List<String> =
+        generateSequence(0) { it + 1 }.map { props.getProperty("$prefix$it$suffix") }.takeWhile { it != null }.map { it!! }.toList()
+
+    private fun writeBlock(data: DataOutputStream, props: Properties) {
+        val bytes = ByteArrayOutputStream().also { props.store(it, null) }.toByteArray()
+        data.writeInt(bytes.size)
+        data.write(bytes)
+    }
+
+    private fun readBlock(data: DataInputStream): Properties {
+        val size = data.readInt()
+        if (size !in 0..64_000_000) throw DamagedBackupException()
+        val bytes = ByteArray(size).also(data::readFully)
+        return Properties().apply { load(ByteArrayInputStream(bytes)) }
     }
 
     // ---- Encrypted index (names, folders, sizes, dates, origins) ----

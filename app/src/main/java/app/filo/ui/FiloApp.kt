@@ -153,6 +153,7 @@ private fun FiloNav(pendingRoute: StateFlow<String?>, onRouteHandled: () -> Unit
             if (!controller.hasVaultOpen()) {
                 // Files waiting for "Hide here" stay waiting only while the hidden folder is open.
                 graph.actions.pendingVault.value = emptyList()
+                graph.actions.pendingImport.value = null
                 if (graph.vault.unlocked.value) {
                     graph.vault.lock()
                     graph.vault.clearTemp()

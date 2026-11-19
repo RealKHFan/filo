@@ -70,6 +70,41 @@ class StreamCipherTest {
         assertRejected(sealed, KeyGenerator.getInstance("AES").apply { init(256) }.generateKey())
         assertRejected("not a vault file at all".toByteArray())
     }
+
+    @Test fun `files hidden with Filo 1_7 still open`() {
+        // Made with the 1.7 code before the cipher became streams: the format must never change.
+        val fixed = javax.crypto.spec.SecretKeySpec(ByteArray(32) { it.toByte() }, "AES")
+        fun fixture(name: String) = javaClass.classLoader!!.getResourceAsStream(name)!!.readBytes()
+        assertArrayEquals(ByteArray(150_000) { ((it * 31 + 7) % 256).toByte() }, decrypt(fixture("streamcipher-v1.bin"), fixed))
+        assertArrayEquals(ByteArray(0), decrypt(fixture("streamcipher-v1-empty.bin"), fixed))
+        assertArrayEquals(ByteArray(chunk) { 9 }, decrypt(fixture("streamcipher-v1-exact.bin"), fixed))
+    }
+
+    @Test fun `written in small pieces and read byte by byte`() {
+        val plain = ByteArray(2 * chunk + 333) { (it * 7).toByte() }
+        val out = ByteArrayOutputStream()
+        StreamCipher.Sealer(out, key).use { sealer ->
+            var i = 0
+            while (i < plain.size) {
+                val n = minOf(1 + i % 5000, plain.size - i)
+                sealer.write(plain, i, n)
+                i += n
+            }
+        }
+        val opener = StreamCipher.Opener(ByteArrayInputStream(out.toByteArray()), key)
+        val back = ByteArrayOutputStream()
+        while (true) {
+            val b = opener.read()
+            if (b < 0) break
+            back.write(b)
+        }
+        assertArrayEquals(plain, back.toByteArray())
+        try {
+            StreamCipher.Opener(ByteArrayInputStream(out.toByteArray()), KeyGenerator.getInstance("AES").apply { init(256) }.generateKey())
+            fail("wrong key must fail right away")
+        } catch (_: GeneralSecurityException) {
+        }
+    }
 }
 
 class VaultManagerTest {

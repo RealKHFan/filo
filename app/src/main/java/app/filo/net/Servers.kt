@@ -63,6 +63,13 @@ class ServerStore(private val prefs: SharedPreferences, private val key: KeyWrap
         }
     }
 
+    /** A server as text, for backups. The password stays out (see [password]). */
+    fun toText(server: Server): String = encode(server).toString()
+
+    /** Reads [toText] back; null if it isn't a valid server. The id goes into setting names, so only UUIDs. */
+    fun fromText(id: String, text: String): Server? =
+        if (!Regex("[0-9a-fA-F-]{8,64}").matches(id)) null else runCatching { decode(id, JSONObject(text)) }.getOrNull()
+
     private fun load(): List<Server> = prefs.getString("order", "").orEmpty().split(',').filter { it.isNotBlank() }.mapNotNull { id ->
         prefs.getString("s.$id", null)?.let { runCatching { decode(id, JSONObject(it)) }.getOrNull() }
     }

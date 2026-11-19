@@ -4,6 +4,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import org.bouncycastle.crypto.generators.Argon2BytesGenerator
+import org.bouncycastle.crypto.params.Argon2Parameters
 import java.security.KeyStore
 import java.security.ProviderException
 import java.security.SecureRandom
@@ -36,6 +38,31 @@ object Gcm {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, blob, 0, 12))
         return cipher.doFinal(blob, 12, blob.size - 12)
+    }
+}
+
+/**
+ * Turns a backup password into a key with Argon2id: slow and memory-hungry on purpose, so guessing
+ * is expensive even with graphics cards. The settings are stored in the backup, so they can grow later.
+ */
+class PasswordKdf(val memoryKiB: Int = 65_536, val iterations: Int = 3, val parallelism: Int = 1) {
+    fun derive(password: String, salt: ByteArray): SecretKey {
+        // The same password typed on another phone's keyboard can arrive as different Unicode: make it one form.
+        val bytes = java.text.Normalizer.normalize(password, java.text.Normalizer.Form.NFC).toByteArray(Charsets.UTF_8)
+        val params = Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
+            .withVersion(Argon2Parameters.ARGON2_VERSION_13)
+            .withMemoryAsKB(memoryKiB)
+            .withIterations(iterations)
+            .withParallelism(parallelism)
+            .withSalt(salt)
+            .build()
+        val raw = ByteArray(32)
+        try {
+            Argon2BytesGenerator().apply { init(params) }.generateBytes(bytes, raw)
+            return SecretKeySpec(raw, "AES")
+        } finally {
+            bytes.fill(0)
+        }
     }
 }
 

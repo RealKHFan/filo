@@ -92,6 +92,7 @@ import app.filo.data.SortOrder
 import app.filo.data.ViewLevel
 import app.filo.data.ViewPrefs
 import app.filo.data.sortedBy
+import app.filo.vault.BackupFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -163,6 +164,7 @@ fun FileCollectionScreen(
                 nav.navigate(Routes.image(entry.path))
             }
             entry.extension == "zip" -> extracting = entry
+            BackupFile.isBackup(entry.name) -> openBackup(nav, actions, entry.file)
             !Opener.open(context, entry.file) -> actions.notify("No app on your phone can open .${entry.extension} files")
         }
     }

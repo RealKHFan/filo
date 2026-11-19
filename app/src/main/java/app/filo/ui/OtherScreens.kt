@@ -43,6 +43,7 @@ import androidx.compose.material.icons.outlined.Delete
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import app.filo.data.AUTO_LOCK_CHOICES
 import app.filo.data.FileEntry
 import androidx.compose.material3.Surface
 import androidx.compose.material.icons.outlined.SelectAll
@@ -436,7 +437,6 @@ fun SwitchRow(title: String, body: String?, checked: Boolean, onChange: (Boolean
     )
 }
 
-val AUTO_LOCK_CHOICES = listOf(0, 5, 15, 30, 60)
 
 fun autoLockLabel(seconds: Int) = when (seconds) {
     0 -> "Immediately"

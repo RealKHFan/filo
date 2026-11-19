@@ -22,8 +22,8 @@ android {
         applicationId = "app.filo"
         minSdk = 26
         targetSdk = 36
-        versionCode = 12
-        versionName = "1.7.0"
+        versionCode = 13
+        versionName = "1.8.0"
     }
 
     signingConfigs {
@@ -116,6 +116,8 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-compose:3.3.0")
     implementation("io.coil-kt.coil3:coil-video:3.3.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // Argon2id for backup passwords. Already in the app through smbj; named here so it stays.
+    implementation("org.bouncycastle:bcprov-jdk18on:1.85.2")
     // File servers (only used when you switch them on in Settings)
     implementation("com.hierynomus:smbj:0.15.0")
     implementation("com.rapid7.client:dcerpc:0.12.13") // lists the shares on an SMB server

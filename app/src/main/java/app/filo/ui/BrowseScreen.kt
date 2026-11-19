@@ -61,6 +61,7 @@ import app.filo.data.Opener
 import app.filo.data.StorageInfo
 import app.filo.data.StorageSpace
 import app.filo.data.StorageVolume
+import app.filo.vault.BackupFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -105,6 +106,8 @@ fun BrowseScreen(nav: NavController) {
                             if (entry.kind == FileKind.IMAGE) {
                                 graph.viewerPaths = recent.filter { it.kind == FileKind.IMAGE }.map { it.path }
                                 nav.navigate(Routes.image(entry.path))
+                            } else if (BackupFile.isBackup(entry.name)) {
+                                openBackup(nav, graph.actions, entry.file)
                             } else if (!Opener.open(context, entry.file)) {
                                 graph.actions.notify("No app on your phone can open this file")
                             }
